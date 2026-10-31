@@ -124,14 +124,14 @@ async function screenJoin(code){
      <p>Вы вошли как <b>${esc(ME.user.name)}</b>.</p><button class="btn primary" data-act="accept" data-code="${esc(code)}" style="align-self:flex-start;padding:12px 18px">Присоединиться к команде</button>`}`);
   startConstellation(true);
 }
-function screenOnboard(){
-  $('root').innerHTML = authShell(`${brand()}<h1>Создайте свою компанию</h1><p>Вы станете владельцем: сможете приглашать руководителей и сотрудников и ставить задачи.</p>
+function screenOnboard(another){
+  $('root').innerHTML = authShell(`${brand()}<h1>${another?'Новая компания':'Создайте свою компанию'}</h1><p>Вы станете владельцем: сможете приглашать руководителей и сотрудников и ставить задачи.</p>
     <form id="newco" style="display:flex;flex-direction:column;gap:2px">
       <div class="field"><label for="co-me">Как вас подписать</label><input id="co-me" value="${esc(ME.user.name)}" required></div>
       <div class="field"><label for="co-name">Название компании</label><input id="co-name" placeholder="Например: Fly Marakand" required></div>
       <div class="field"><label for="co-title">Ваша должность</label><input id="co-title" value="Директор"></div>
       <button class="btn primary" type="submit" style="align-self:flex-start;padding:12px 18px">Создать компанию</button>
-    </form><p class="note">Если вас пригласили в компанию — откройте ссылку-приглашение от руководителя.</p><button class="linkbtn" data-act="logout">Выйти</button>`);
+    </form><p class="note">Если вас пригласили в компанию — откройте ссылку-приглашение от руководителя.</p>${another?'<button class="linkbtn" data-act="back">← Вернуться в мою компанию</button>':'<button class="linkbtn" data-act="logout">Выйти</button>'}`);
   startConstellation(true);
 }
 
@@ -156,6 +156,7 @@ function shell(){
       <div class="me-box" id="mebox"></div>
     </aside><main class="main" id="main"></main></div><nav class="tabbar" id="tabbar"></nav>`;
 }
+const coSwitch = id => `<select id="${id}" class="coswitch" aria-label="Компания">${ME.companies.map(c=>`<option value="${c.member_id}" ${c.member_id===S.me?'selected':''}>${esc(c.name)}${c.role==='owner'?' · владелец':''}</option>`).join('')}<option value="new">+ Создать новую компанию…</option></select>`;
 const initials = s => (s||'?').split(/\s+/).filter(Boolean).slice(0,2).map(w=>w[0]).join('').toUpperCase();
 function renderNav(){
   const cur = current(), unread = myUnread();
@@ -173,7 +174,7 @@ function renderNav(){
   $('tabbar').innerHTML = routes().map(([k,l]) => `<a href="#${k}" ${k===cur?'aria-current="page"':''}>${ICON[k]}<span>${l.replace('Мои ','')}</span>${k==='alerts'&&unread?'<i class="dot"></i>':''}</a>`).join('');
   const u = me();
   $('mebox').innerHTML = `<div class="person">${av(u,32)}<div><b>${esc(u.name)}</b><small>${esc(u.title|| (isOwner()?'Владелец':''))}</small></div></div>
-    ${ME.companies.length>1?`<select id="switchco" aria-label="Компания">${ME.companies.map(c=>`<option value="${c.member_id}" ${c.member_id===S.me?'selected':''}>${esc(c.name)}</option>`).join('')}</select>`:''}
+    ${coSwitch('switchco')}
     <div style="display:flex;justify-content:space-between;gap:8px"><button class="linkbtn" data-act="profile">Изменить имя</button><button class="linkbtn" data-act="logout">Выйти</button></div>`;
 }
 let F = {who:'all', q:'', mode:'timeline', off:0};
@@ -477,7 +478,7 @@ function vAlerts(){
         <div class="set"><div>${isMgr()?'Сотрудник выполнил задачу, комментарии':'Изменения и комментарии по моим задачам'}</div><button class="switch ${st.onDone!==false?'on':''}" data-sw="onDone" aria-label="Выполнение" aria-pressed="${st.onDone!==false}"></button></div>
       </div>
       <div class="card"><div class="card-h"><div><h3>Профиль</h3><p>${esc(me().name)} · ${esc(S.company.name)}</p></div></div>
-        <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn sm" data-act="profile">Изменить имя${isOwner()?' и компанию':''}</button><button class="btn sm" data-act="logout">Выйти</button></div></div>
+        <div class="field"><label for="switchco2">Компания</label>${coSwitch('switchco2')}</div><div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn sm" data-act="profile">Изменить имя${isOwner()?' и компанию':''}</button><button class="btn sm" data-act="logout">Выйти</button></div></div>
     </div>
   </div>`;
 }
@@ -604,6 +605,7 @@ document.addEventListener('click', e => {
   if(a==='testmsg') return act(()=>api('POST','/api/test-message'),'Отправлено — проверьте Telegram');
   if(a==='copy'){ const v = el.dataset.v; navigator.clipboard.writeText(v).then(()=>toast('Ссылка скопирована')).catch(()=>{ const c = el.parentElement.querySelector('code'); const r = document.createRange(); r.selectNodeContents(c); const s = getSelection(); s.removeAllRanges(); s.addRange(r); toast('Выделено — скопируйте'); }); return; }
   if(a==='accept'){ return (async()=>{ try { await api('POST','/api/invite/'+el.dataset.code+'/accept'); history.replaceState(null,'','/'); toast('Добро пожаловать в команду!'); boot(); } catch(err){ toast(err.message); } })(); }
+  if(a==='back') return boot();
   if(a==='logout'){ return (async()=>{ await api('POST','/api/logout').catch(()=>{}); S=null; history.replaceState(null,'','/'); boot(); })(); }
 });
 document.addEventListener('submit', async e => {
@@ -642,7 +644,7 @@ document.addEventListener('change', e => {
   if(id==='f-who'){ F.who = e.target.value; return render(); }
   if(id==='i-dept') $('i-newdept-f').hidden = e.target.value!=='new';
   if(id==='e-dept') $('e-newdept-f').hidden = e.target.value!=='new';
-  if(id==='switchco') return (async()=>{ await api('POST','/api/switch',{memberId:Number(e.target.value)}); location.hash=''; ME = await api('GET','/api/me'); await reload(); shell(); render(); })();
+  if(id==='switchco' || id==='switchco2'){ if(e.target.value==='new'){ S=null; return screenOnboard(true); } return (async()=>{ await api('POST','/api/switch',{memberId:Number(e.target.value)}); location.hash=''; ME = await api('GET','/api/me'); await reload(); shell(); render(); toast('Компания: '+S.company.name); })(); }
   if(id==='s-morning'||id==='s-evening'||id==='s-before') return act(()=>api('PATCH','/api/settings',{[id.slice(2)]: e.target.value}),'Настройка сохранена');
 });
 document.addEventListener('keydown', e => {
