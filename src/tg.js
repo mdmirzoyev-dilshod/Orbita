@@ -52,15 +52,22 @@ async function onMessage(m) {
   if (m.chat.type !== 'private') return;
   const user = await upsertUser(m.from);
 
-  if (text.startsWith('/start')) {
+  if (text.startsWith('/start') || text.startsWith('/login')) {
     const arg = text.split(' ')[1] || '';
+    let confirmed = false;
     if (arg.startsWith('login_')) {
-      const nonce = arg.slice(6);
-      const r = await db.q(`UPDATE login_nonces SET user_id=$1 WHERE nonce=$2 AND user_id IS NULL AND created_at > now() - interval '15 minutes'`, [user.id, nonce]);
-      if (r.rowCount) return send(chat, `✅ Вход подтверждён, ${user.name}!\n\nВернитесь в браузер — страница откроется сама.\n\nСюда будут приходить ваши задачи, напоминания и итоги дня.`, { open: false });
-      return send(chat, 'Ссылка для входа устарела. Нажмите «Войти через Telegram» на сайте ещё раз.', { open: false });
+      const r = await db.q(`UPDATE login_nonces SET user_id=$1 WHERE nonce=$2 AND user_id IS NULL AND created_at > now() - interval '15 minutes'`, [user.id, arg.slice(6)]);
+      confirmed = r.rowCount > 0;
     }
-    return send(chat, `Здравствуйте, ${user.name}! Это бот «Орбиты» — задачи и личные планы команды.\n\nЧтобы начать, откройте сайт и нажмите «Войти через Telegram».\n\nКоманды:\n/tasks — мои задачи\n/plan — мой план на сегодня`);
+    // одноразовая кнопка входа — работает, даже если сайт не «увидел» подтверждение
+    const token = require('crypto').randomBytes(18).toString('base64url');
+    await db.q(`INSERT INTO login_tokens (token, user_id) VALUES ($1,$2)`, [token, user.id]);
+    const u = appUrl();
+    const rows = u ? [[{ text: '🔐 Войти в Орбиту', url: `${u}/auth/tg?t=${token}${arg.startsWith('join_') ? '&join=' + arg.slice(5) : ''}` }]] : [];
+    const head = confirmed
+      ? `✅ Вход подтверждён, ${user.name}!\n\nВернитесь в браузер — страница откроется сама. Если не открылась, нажмите кнопку ниже.`
+      : `Здравствуйте, ${user.name}! Это бот «Орбиты» — задачи и личные планы команды.\n\nНажмите кнопку ниже, чтобы войти на сайт (кнопка действует 15 минут).`;
+    return call('sendMessage', { chat_id: chat, text: head + `\n\nСюда будут приходить задачи, напоминания и итоги дня.\nКоманды: /tasks — мои задачи, /plan — план на сегодня, /login — войти на сайт`, reply_markup: rows.length ? { inline_keyboard: rows } : undefined });
   }
 
   const members = await db.all(`SELECT m.*, c.name AS company FROM members m JOIN companies c ON c.id=m.company_id WHERE m.user_id=$1 AND m.active`, [user.id]);
@@ -105,7 +112,7 @@ async function poll() {
   const me = await call('getMe');
   if (me && me.ok) BOT_USERNAME = me.result.username;
   await call('deleteWebhook', { drop_pending_updates: false });
-  await call('setMyCommands', { commands: [{ command: 'tasks', description: 'Мои задачи' }, { command: 'plan', description: 'Мой план на сегодня' }] });
+  await call('setMyCommands', { commands: [{ command: 'tasks', description: 'Мои задачи' }, { command: 'plan', description: 'Мой план на сегодня' }, { command: 'login', description: 'Войти на сайт' }] });
   console.log('[tg] бот запущен:', BOT_USERNAME ? '@' + BOT_USERNAME : '(нет имени)');
   while (running) {
     try {

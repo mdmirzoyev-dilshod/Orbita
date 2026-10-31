@@ -154,6 +154,12 @@ CREATE TABLE IF NOT EXISTS login_nonces (
   created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS login_tokens (
+  token       TEXT PRIMARY KEY,
+  user_id     INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS sent_digests (
   member_id   INT NOT NULL REFERENCES members(id) ON DELETE CASCADE,
   kind        TEXT NOT NULL,

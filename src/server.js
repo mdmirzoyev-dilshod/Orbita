@@ -73,6 +73,14 @@ app.get('/api/auth/poll', wrap(async (req, res) => {
   await startSession(res, n.user_id, req);
   res.json({ ok: true });
 }));
+// Вход по одноразовой кнопке из бота
+app.get('/auth/tg', wrap(async (req, res) => {
+  const t = await db.one(`DELETE FROM login_tokens WHERE token=$1 AND created_at > now() - interval '15 minutes' RETURNING user_id`, [clean(req.query.t, 60)]);
+  if (!t) return res.redirect('/?login=expired');
+  await startSession(res, t.user_id, req);
+  const join = clean(req.query.join, 30);
+  res.redirect(join ? `/join/${encodeURIComponent(join)}` : '/');
+}));
 // Вход без Telegram — только для проверки (DEV_LOGIN=1)
 app.post('/api/auth/dev', wrap(async (req, res) => {
   if (process.env.DEV_LOGIN !== '1') return res.status(404).end();

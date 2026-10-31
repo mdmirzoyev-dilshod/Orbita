@@ -102,14 +102,15 @@ async function screenLogin(){
   let btn = '';
   if(!ME.botReady){ btn = `<div class="err">Telegram-бот ещё не подключён на сервере. Администратору нужно добавить BOT_TOKEN в настройки.</div>`; }
   else {
-    try { LOGIN = await api('POST','/api/auth/start'); btn = `<a class="tgbtn" href="${esc(LOGIN.link)}" target="_blank" rel="noopener" id="tglogin">${ICON.tg}Войти через Telegram</a><div class="wait" id="wait" hidden><span class="spin"></span>Ждём подтверждения в Telegram… Нажмите «Start» в боте.</div>`; }
+    try { LOGIN = await api('POST','/api/auth/start'); btn = `<a class="tgbtn" href="${esc(LOGIN.link)}" target="_blank" rel="noopener" id="tglogin">${ICON.tg}Войти через Telegram</a><div class="wait" id="wait" hidden><span class="spin"></span>Ждём подтверждения в Telegram… Нажмите «Start» в боте. Если страница не откроется сама — нажмите в боте кнопку «🔐 Войти в Орбиту».</div>`; }
     catch(e){ btn = `<div class="err">${esc(e.message)}</div>`; }
   }
   const dev = ME.devLogin ? `<form id="devlogin" class="add" style="margin-top:4px"><input id="devname" placeholder="Тестовый вход: имя" aria-label="Имя для тестового входа"><button class="btn" type="submit">Войти</button></form>` : '';
-  $('root').innerHTML = authShell(`${brand()}${invText}<h1>Задачи, планы и дисциплина команды — в одном месте</h1><p>Войдите через Telegram: без паролей и SMS. В этот же Telegram будут приходить задачи и напоминания.</p>${btn}${dev}<p class="note">Нажимая «Войти», вы соглашаетесь получать сообщения от бота «Орбиты». Отключить их можно в настройках.</p>`);
+  $('root').innerHTML = authShell(`${brand()}${invText}<h1>Задачи, планы и дисциплина команды — в одном месте</h1><p>Войдите через Telegram: без паролей и SMS. В этот же Telegram будут приходить задачи и напоминания.</p>${btn}${dev}${new URLSearchParams(location.search).get('login')==='expired'?'<div class="err">Кнопка входа устарела. Отправьте боту /login и нажмите новую кнопку.</div>':''}<p class="note">Нажимая «Войти», вы соглашаетесь получать сообщения от бота «Орбиты». Отключить их можно в настройках.</p>`);
   startConstellation(true);
   const a = $('tglogin');
-  if(a){ a.addEventListener('click', () => { $('wait').hidden = false; clearInterval(pollTimer); pollTimer = setInterval(checkLogin, 2000); }); }
+  clearInterval(pollTimer);
+  if(a){ pollTimer = setInterval(checkLogin, 2500); a.addEventListener('click', () => { $('wait').hidden = false; }); }
 }
 async function checkLogin(){
   if(!LOGIN) return;
