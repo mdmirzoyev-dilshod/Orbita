@@ -1,0 +1,19 @@
+{
+  "name": "orbita",
+  "version": "1.0.0",
+  "description": "Орбита — задачи, личные планы и Telegram-уведомления для команды",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "DEV_LOGIN=1 node src/server.js"
+  },
+  "dependencies": {
+    "cookie-parser": "^1.4.7",
+    "express": "^4.21.2",
+    "pg": "^8.13.1"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "private": true
+}
