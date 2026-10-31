@@ -54,16 +54,16 @@ async function onMessage(m) {
 
   if (text.startsWith('/start') || text.startsWith('/login')) {
     const arg = text.split(' ')[1] || '';
-    let confirmed = false;
+    let confirmed = false, joinCode = '';
     if (arg.startsWith('login_')) {
-      const r = await db.q(`UPDATE login_nonces SET user_id=$1 WHERE nonce=$2 AND user_id IS NULL AND created_at > now() - interval '15 minutes'`, [user.id, arg.slice(6)]);
-      confirmed = r.rowCount > 0;
+      const r = await db.one(`UPDATE login_nonces SET user_id=$1 WHERE nonce=$2 AND user_id IS NULL AND created_at > now() - interval '15 minutes' RETURNING join_code`, [user.id, arg.slice(6)]);
+      confirmed = Boolean(r); joinCode = (r && r.join_code) || '';
     }
     // одноразовая кнопка входа — работает, даже если сайт не «увидел» подтверждение
     const token = require('crypto').randomBytes(18).toString('base64url');
     await db.q(`INSERT INTO login_tokens (token, user_id) VALUES ($1,$2)`, [token, user.id]);
     const u = appUrl();
-    const rows = u ? [[{ text: '🔐 Войти в Орбиту', url: `${u}/auth/tg?t=${token}${arg.startsWith('join_') ? '&join=' + arg.slice(5) : ''}` }]] : [];
+    const rows = u ? [[{ text: '🔐 Войти в Орбиту', url: `${u}/auth/tg?t=${token}${joinCode ? '&join=' + encodeURIComponent(joinCode) : ''}` }]] : [];
     const head = confirmed
       ? `✅ Вход подтверждён, ${user.name}!\n\nВернитесь в браузер — страница откроется сама. Если не открылась, нажмите кнопку ниже.`
       : `Здравствуйте, ${user.name}! Это бот «Орбиты» — задачи и личные планы команды.\n\nНажмите кнопку ниже, чтобы войти на сайт (кнопка действует 15 минут).`;

@@ -175,6 +175,7 @@ CREATE TABLE IF NOT EXISTS kv (
 
 async function migrate() {
   await q(SCHEMA);
+  await q(`ALTER TABLE login_nonces ADD COLUMN IF NOT EXISTS join_code TEXT`);
 }
 
 module.exports = { pool, q, one, all, tx, migrate };

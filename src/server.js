@@ -62,7 +62,7 @@ app.get('/api/me', wrap(async (req, res) => {
 app.post('/api/auth/start', wrap(async (req, res) => {
   if (!tg.enabled() || !tg.botUsername()) return res.status(503).json({ error: 'Telegram-бот ещё не подключён на сервере (нет BOT_TOKEN).' });
   const nonce = rid(12);
-  await db.q(`INSERT INTO login_nonces (nonce) VALUES ($1)`, [nonce]);
+  await db.q(`INSERT INTO login_nonces (nonce, join_code) VALUES ($1,$2)`, [nonce, clean(req.body && req.body.join, 30) || null]);
   res.json({ nonce, link: `https://t.me/${tg.botUsername()}?start=login_${nonce}` });
 }));
 app.get('/api/auth/poll', wrap(async (req, res) => {

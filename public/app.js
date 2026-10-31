@@ -102,7 +102,7 @@ async function screenLogin(){
   let btn = '';
   if(!ME.botReady){ btn = `<div class="err">Telegram-бот ещё не подключён на сервере. Администратору нужно добавить BOT_TOKEN в настройки.</div>`; }
   else {
-    try { LOGIN = await api('POST','/api/auth/start'); btn = `<a class="tgbtn" href="${esc(LOGIN.link)}" target="_blank" rel="noopener" id="tglogin">${ICON.tg}Войти через Telegram</a><div class="wait" id="wait" hidden><span class="spin"></span>Ждём подтверждения в Telegram… Нажмите «Start» в боте. Если страница не откроется сама — нажмите в боте кнопку «🔐 Войти в Орбиту».</div>`; }
+    try { LOGIN = await api('POST','/api/auth/start', join ? {join} : {}); btn = `<a class="tgbtn" href="${esc(LOGIN.link)}" target="_blank" rel="noopener" id="tglogin">${ICON.tg}Войти через Telegram</a><div class="wait" id="wait" hidden><span class="spin"></span>Ждём подтверждения в Telegram… Нажмите «Start» в боте. Если страница не откроется сама — нажмите в боте кнопку «🔐 Войти в Орбиту».</div>`; }
     catch(e){ btn = `<div class="err">${esc(e.message)}</div>`; }
   }
   const dev = ME.devLogin ? `<form id="devlogin" class="add" style="margin-top:4px"><input id="devname" placeholder="Тестовый вход: имя" aria-label="Имя для тестового входа"><button class="btn" type="submit">Войти</button></form>` : '';
