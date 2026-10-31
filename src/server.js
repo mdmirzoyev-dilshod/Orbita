@@ -344,7 +344,7 @@ app.patch('/api/profile', auth(false), wrap(async (req, res) => {
 app.get('/healthz', wrap(async (req, res) => { await db.q('SELECT 1'); res.json({ ok: true, bot: tg.botUsername() || null }); }));
 
 /* ---------- интерфейс ---------- */
-app.use(express.static(path.join(__dirname, '..', 'public'), { index: false, maxAge: '1h' }));
+app.use(express.static(path.join(__dirname, '..', 'public'), { index: false, maxAge: 0, etag: true }));
 app.get(['/', '/join/:code'], (req, res) => res.sendFile(path.join(__dirname, '..', 'public', 'index.html')));
 
 /* ---------- запуск ---------- */
