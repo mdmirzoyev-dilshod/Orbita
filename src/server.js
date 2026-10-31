@@ -175,14 +175,19 @@ app.get('/api/state', auth(), wrap(async (req, res) => {
   const t0 = today();
   const tasks = await db.all(`SELECT * FROM tasks WHERE company_id=$1 AND (assignee_id = ANY($2) OR author_id=$3) ORDER BY due, id`, [me.company_id, scope, me.id]);
   const comments = tasks.length ? await db.all(`SELECT * FROM comments WHERE task_id = ANY($1) ORDER BY id`, [tasks.map(t => t.id)]) : [];
-  const plans = await db.all(`SELECT * FROM plan_items WHERE member_id = ANY($1) AND day BETWEEN $2 AND $3 ORDER BY id`, [scope, addDays(t0, -14), addDays(t0, 30)]);
+  const plans = await db.all(`SELECT * FROM plan_items WHERE member_id = ANY($1) AND day BETWEEN $2 AND $3 ORDER BY time NULLS LAST, id`, [scope, addDays(t0, -21), addDays(t0, 60)]);
   const habits = await db.all(`SELECT * FROM habits WHERE member_id=$1 ORDER BY id`, [me.id]);
   const marks = habits.length ? await db.all(`SELECT * FROM habit_marks WHERE habit_id = ANY($1) AND day >= $2`, [habits.map(h => h.id), addDays(t0, -30)]) : [];
   const notifs = await db.all(`SELECT * FROM notifs WHERE member_id=$1 ORDER BY id DESC LIMIT 100`, [me.id]);
   const depts = await db.all(`SELECT * FROM depts WHERE company_id=$1 ORDER BY id`, [me.company_id]);
 
   const P = {};
-  for (const p of plans) ((P[p.member_id] ||= {})[p.day] ||= []).push({ id: p.id, text: p.text, done: p.done });
+  for (const p of plans) {
+    const own = p.member_id === me.id;   // заметки и детали видит только сам человек
+    ((P[p.member_id] ||= {})[p.day] ||= []).push(own
+      ? { id: p.id, text: p.text, done: p.done, time: p.time, note: p.note, series: p.series_id, repeat: p.repeat, remind: p.remind, important: p.important }
+      : { id: p.id, text: p.text, done: p.done });
+  }
   res.json({
     today: t0,
     company: { id: co.id, name: co.name },
@@ -265,19 +270,72 @@ app.post('/api/tasks/:id/comments', auth(), wrap(async (req, res) => {
 }));
 
 /* ---------- планы и привычки ---------- */
+// План: один пункт или серия (каждый день / по будням / раз в неделю / по выбранным дням) до указанной даты
+const isTime = s => /^\d{2}:\d{2}$/.test(String(s || ''));
+function planFields(b) {
+  return { text: clean(b.text, 200), note: clean(b.note, 1000), time: isTime(b.time) ? b.time : null, important: Boolean(b.important), remind: Boolean(b.remind) && isTime(b.time) };
+}
 app.post('/api/plans', auth(), wrap(async (req, res) => {
-  const text = clean(req.body.text, 200);
-  if (!text || !isDate(req.body.day)) return res.status(400).json({ error: 'Напишите пункт плана' });
-  await db.q(`INSERT INTO plan_items (member_id, day, text) VALUES ($1,$2,$3)`, [req.me.id, req.body.day, text]);
-  res.json({ ok: true });
+  const b = req.body, f = planFields(b);
+  if (!f.text || !isDate(b.day)) return res.status(400).json({ error: 'Напишите пункт плана и выберите дату' });
+  const repeat = ['daily', 'weekdays', 'weekly', 'days'].includes(b.repeat) ? b.repeat : null;
+  let days = [b.day];
+  if (repeat) {
+    const maxEnd = addDays(b.day, 365);
+    let until = isDate(b.until) ? b.until : addDays(b.day, 89);
+    if (until > maxEnd) until = maxEnd;
+    if (until < b.day) return res.status(400).json({ error: 'Дата окончания раньше даты начала' });
+    const wdStart = new Date(b.day + 'T12:00:00Z').getUTCDay();
+    const pick = Array.isArray(b.days) ? b.days.map(Number).filter(n => n >= 0 && n <= 6) : [];
+    if (repeat === 'days' && !pick.length) return res.status(400).json({ error: 'Выберите дни недели' });
+    days = [];
+    for (let d = b.day; d <= until; d = addDays(d, 1)) {
+      const wd = new Date(d + 'T12:00:00Z').getUTCDay();
+      if (repeat === 'daily' || (repeat === 'weekdays' && wd >= 1 && wd <= 5) || (repeat === 'weekly' && wd === wdStart) || (repeat === 'days' && pick.includes(wd))) days.push(d);
+    }
+    if (!days.length) return res.status(400).json({ error: 'В выбранном периоде нет подходящих дней' });
+  }
+  const series = repeat ? rid(8) : null;
+  const vals = [], ph = [];
+  days.forEach((d, i) => {
+    const k = i * 9;
+    ph.push(`($${k + 1},$${k + 2},$${k + 3},$${k + 4},$${k + 5},$${k + 6},$${k + 7},$${k + 8},$${k + 9})`);
+    vals.push(req.me.id, d, f.text, f.note, f.time, series, repeat, f.remind, f.important);
+  });
+  await db.q(`INSERT INTO plan_items (member_id, day, text, note, time, series_id, repeat, remind, important) VALUES ${ph.join(',')}`, vals);
+  res.json({ ok: true, count: days.length, from: days[0], to: days[days.length - 1] });
 }));
 app.patch('/api/plans/:id', auth(), wrap(async (req, res) => {
-  await db.q(`UPDATE plan_items SET done=$1 WHERE id=$2 AND member_id=$3`, [Boolean(req.body.done), Number(req.params.id), req.me.id]);
+  const b = req.body, id = Number(req.params.id);
+  const p = await db.one(`SELECT * FROM plan_items WHERE id=$1 AND member_id=$2`, [id, req.me.id]);
+  if (!p) return res.status(404).json({ error: 'Пункт не найден' });
+  if (typeof b.done === 'boolean' && Object.keys(b).length === 1) {
+    await db.q(`UPDATE plan_items SET done=$1 WHERE id=$2`, [b.done, id]);
+    return res.json({ ok: true });
+  }
+  const f = planFields({ ...p, ...b, time: b.time !== undefined ? b.time : p.time });
+  if (!f.text) return res.status(400).json({ error: 'Пункт плана не может быть пустым' });
+  const timeChanged = f.time !== p.time;
+  if (b.scope === 'series' && p.series_id) {
+    // изменить этот и все следующие дни серии (дату не трогаем)
+    await db.q(`UPDATE plan_items SET text=$1, note=$2, time=$3, remind=$4, important=$5, reminded = CASE WHEN $6 THEN false ELSE reminded END
+                WHERE series_id=$7 AND member_id=$8 AND day >= $9`, [f.text, f.note, f.time, f.remind, f.important, timeChanged, p.series_id, req.me.id, p.day]);
+  } else {
+    const day = isDate(b.day) ? b.day : p.day;
+    await db.q(`UPDATE plan_items SET text=$1, note=$2, time=$3, remind=$4, important=$5, day=$6, reminded = CASE WHEN $7 OR $6 <> day THEN false ELSE reminded END WHERE id=$8`,
+      [f.text, f.note, f.time, f.remind, f.important, day, timeChanged, id]);
+  }
   res.json({ ok: true });
 }));
 app.delete('/api/plans/:id', auth(), wrap(async (req, res) => {
-  await db.q(`DELETE FROM plan_items WHERE id=$1 AND member_id=$2`, [Number(req.params.id), req.me.id]);
-  res.json({ ok: true });
+  const p = await db.one(`SELECT * FROM plan_items WHERE id=$1 AND member_id=$2`, [Number(req.params.id), req.me.id]);
+  if (!p) return res.json({ ok: true });
+  if (req.query.series === '1' && p.series_id) {
+    const r = await db.q(`DELETE FROM plan_items WHERE series_id=$1 AND member_id=$2 AND day >= $3`, [p.series_id, req.me.id, p.day]);
+    return res.json({ ok: true, count: r.rowCount });
+  }
+  await db.q(`DELETE FROM plan_items WHERE id=$1`, [p.id]);
+  res.json({ ok: true, count: 1 });
 }));
 app.post('/api/habits', auth(), wrap(async (req, res) => {
   const name = clean(req.body.name, 60);

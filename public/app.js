@@ -434,8 +434,12 @@ function vPlans(){
     <div class="card">
       <div class="card-h"><div><h3>План на день</h3><p>Вечером бот напомнит, что осталось</p></div><div class="daynav"><button data-act="day-" aria-label="Предыдущий день">‹</button><span>${dlabel}</span><button data-act="day+" aria-label="Следующий день">›</button></div></div>
       <div class="ringrow">${ring(p,84)}<div><b class="num">${p==null?'—':p+'%'}</b><small>${items.filter(x=>x.done).length} из ${items.length} выполнено</small></div></div>
-      ${items.map(it=>`<div class="plan-item ${it.done?'done':''}"><button class="check ${it.done?'on':''}" data-plan="${it.id}" data-done="${it.done?1:0}" aria-label="Отметить">${ICON.tick}</button><span>${esc(it.text)}</span><button class="del" data-pdel="${it.id}" aria-label="Удалить">✕</button></div>`).join('') || '<div class="empty">На этот день планов нет — добавьте первый пункт.</div>'}
-      <form class="add" id="add-plan"><input id="plan-text" placeholder="Например: встреча с поставщиком в 15:00" aria-label="Новый пункт плана" autocomplete="off"><button class="btn primary" type="submit">Добавить</button></form>
+      ${items.map(it=>`<div class="plan-item ${it.done?'done':''} ${it.important?'imp':''}"><button class="check ${it.done?'on':''}" data-plan="${it.id}" data-done="${it.done?1:0}" aria-label="Отметить">${ICON.tick}</button>
+        <div class="pi-body" data-pedit="${it.id}" role="button" tabindex="0" title="Открыть и изменить">
+          <div class="pi-top">${it.time?`<span class="pi-time num">${esc(it.time)}</span>`:''}${it.important?'<span class="pi-star" title="Важное">★</span>':''}<span class="pi-text">${esc(it.text)}</span></div>
+          ${it.note||it.repeat||it.remind?`<div class="pi-meta">${it.repeat?`<span title="Повторяется">↻ ${REPEAT_SHORT[it.repeat]||'повтор'}</span>`:''}${it.remind?'<span title="Напоминание в Telegram">🔔 напомню</span>':''}${it.note?`<span class="pi-note">📝 ${esc(it.note.length>90?it.note.slice(0,90)+'…':it.note)}</span>`:''}</div>`:''}
+        </div></div>`).join('') || '<div class="empty">На этот день планов нет — добавьте первый пункт.</div>'}
+      <form class="add" id="add-plan"><input id="plan-text" placeholder="Новый пункт плана" aria-label="Новый пункт плана" autocomplete="off"><button class="btn" type="button" data-act="plan-more" title="Дата, время, повтор, заметка">Подробнее…</button><button class="btn primary" type="submit">Добавить</button></form>
     </div>
     <div class="card">
       <div class="card-h"><div><h3>Привычки</h3><p>Последние 7 дней</p></div><span class="pill blue num">${streak}% недели</span></div>
@@ -519,6 +523,48 @@ function openTask(id){
     <div class="mact">${t.author===S.me||isOwner()?`<button type="button" class="btn" data-delete="${t.id}" style="color:var(--bad)">Удалить задачу</button>`:''}<button type="button" class="btn" data-close="1">Закрыть</button></div>
   </div>`);
 }
+const REPEAT = [['','Не повторять'],['daily','Каждый день'],['weekdays','По будням (Пн–Пт)'],['weekly','Раз в неделю'],['days','По выбранным дням']];
+const REPEAT_SHORT = {daily:'каждый день', weekdays:'по будням', weekly:'раз в неделю', days:'по дням недели'};
+const WD_ORDER = [1,2,3,4,5,6,0];
+function openPlanNew(text){
+  const wd = new Date((DAY||TODAY)+'T12:00:00').getDay();
+  modal(`<form class="modal" id="plan-form" role="dialog" aria-label="Новый пункт плана">
+    <h2>Новый пункт плана</h2>
+    <div class="field"><label for="pf-text">Что сделать</label><input id="pf-text" required value="${esc(text||'')}" autocomplete="off"></div>
+    <div class="frow"><div class="field"><label for="pf-day">Дата</label><input type="date" id="pf-day" value="${DAY||TODAY}" required></div>
+    <div class="field"><label for="pf-time">Время (необязательно)</label><input type="time" id="pf-time"></div></div>
+    <div class="frow"><div class="field"><label for="pf-repeat">Повтор</label><select id="pf-repeat">${REPEAT.map(([v,l])=>`<option value="${v}">${l}</option>`).join('')}</select></div>
+    <div class="field" id="pf-until-f" hidden><label for="pf-until">До какого числа</label><input type="date" id="pf-until" value="${addDays(DAY||TODAY,29)}"></div></div>
+    <div class="field" id="pf-days-f" hidden><label>Дни недели</label><div class="wdchips">${WD_ORDER.map(d=>`<label class="wdc"><input type="checkbox" name="pf-wd" value="${d}" ${d===wd?'checked':''}><span>${WD[d]}</span></label>`).join('')}</div></div>
+    <div class="field"><label for="pf-note">Заметка</label><textarea id="pf-note" placeholder="Детали, адрес, контакт, что взять с собой…"></textarea></div>
+    <div class="opts"><label class="opt"><input type="checkbox" id="pf-remind"><span>🔔 Напомнить в Telegram в указанное время</span></label>
+    <label class="opt"><input type="checkbox" id="pf-imp"><span>★ Важное</span></label></div>
+    <p class="note" id="pf-hint"></p>
+    <div class="mact"><button type="button" class="btn" data-close="1">Отмена</button><button class="btn primary" type="submit">Добавить в план</button></div>
+  </form>`);
+  setTimeout(()=>{ $('pf-text').focus(); planHint(); },30);
+}
+function planHint(){
+  const r = $('pf-repeat') && $('pf-repeat').value, h = $('pf-hint'); if(!h) return;
+  $('pf-until-f').hidden = !r; $('pf-days-f').hidden = r!=='days';
+  const t = $('pf-time').value; $('pf-remind').disabled = !t; if(!t) $('pf-remind').checked = false;
+  h.textContent = !t ? 'Чтобы получить напоминание в Telegram, укажите время.' : (r ? `Пункт появится в плане ${REPEAT_SHORT[r]} с ${fmt($('pf-day').value)} по ${fmt($('pf-until').value)}.` : '');
+}
+function openPlanEdit(id){
+  const it = plansFor(S.me, DAY).find(x=>x.id===id); if(!it) return;
+  modal(`<form class="modal" id="plan-edit" data-id="${id}" role="dialog" aria-label="Пункт плана">
+    <h2>Пункт плана</h2>
+    <div class="field"><label for="pe-text">Что сделать</label><input id="pe-text" required value="${esc(it.text)}" autocomplete="off"></div>
+    <div class="frow"><div class="field"><label for="pe-day">Дата</label><input type="date" id="pe-day" value="${DAY}" ${it.series?'':''}></div>
+    <div class="field"><label for="pe-time">Время</label><input type="time" id="pe-time" value="${esc(it.time||'')}"></div></div>
+    <div class="field"><label for="pe-note">Заметка</label><textarea id="pe-note">${esc(it.note||'')}</textarea></div>
+    <div class="opts"><label class="opt"><input type="checkbox" id="pe-remind" ${it.remind?'checked':''} ${it.time?'':'disabled'}><span>🔔 Напомнить в Telegram в указанное время</span></label>
+    <label class="opt"><input type="checkbox" id="pe-imp" ${it.important?'checked':''}><span>★ Важное</span></label></div>
+    ${it.series?`<div class="field"><label>Это повторяющийся пункт (${REPEAT_SHORT[it.repeat]||'повтор'})</label><div class="opts"><label class="opt"><input type="radio" name="pe-scope" value="one" checked><span>Изменить только этот день</span></label><label class="opt"><input type="radio" name="pe-scope" value="series"><span>Изменить этот и все следующие</span></label></div></div>`:''}
+    <div class="mact" style="justify-content:space-between"><span style="display:flex;gap:6px;flex-wrap:wrap"><button type="button" class="btn" data-pdel="${id}" style="color:var(--bad)">Удалить${it.series?' день':''}</button>${it.series?`<button type="button" class="btn" data-pdel="${id}" data-series="1" style="color:var(--bad)">Удалить серию</button>`:''}</span>
+      <span style="display:flex;gap:6px"><button type="button" class="btn" data-close="1">Отмена</button><button class="btn primary" type="submit">Сохранить</button></span></div>
+  </form>`);
+}
 function deptOptions(sel){ return S.depts.map(d=>`<option value="${d.id}" ${String(sel)===String(d.id)?'selected':''}>${esc(d.name)}</option>`).join('') + '<option value="new">+ Новый отдел…</option>'; }
 function openInvite(){
   const myDept = me().deptId;
@@ -578,7 +624,7 @@ async function boot(){
 
 /* ---------- события ---------- */
 document.addEventListener('click', e => {
-  const el = e.target.closest('[data-act],[data-open],[data-tick],[data-plan],[data-pdel],[data-hdel],[data-hab],[data-status],[data-close],[data-delete],[data-sw],[data-cf],[data-view],[data-mode]');
+  const el = e.target.closest('[data-act],[data-open],[data-tick],[data-plan],[data-pdel],[data-pedit],[data-hdel],[data-hab],[data-status],[data-close],[data-delete],[data-sw],[data-cf],[data-view],[data-mode]');
   if(!el) return;
   if(el.dataset.close && e.target !== el && !e.target.closest('button[data-close]')) return;
   if(el.dataset.tick){ e.stopPropagation(); const t=S.tasks.find(x=>x.id===Number(el.dataset.tick)); const ns = t.status==='done'?'progress':'done';
@@ -590,14 +636,16 @@ document.addEventListener('click', e => {
   if(el.dataset.mode){ F.mode = el.dataset.mode; return render(); }
   if(el.dataset.status){ const [id,s]=el.dataset.status.split('|'); return act(async()=>{ await api('PATCH','/api/tasks/'+id,{status:s}); }, 'Статус: '+STATUS[s]).then(()=>openTask(Number(id))); }
   if(el.dataset.delete){ const id = el.dataset.delete; if(el.dataset.confirm!=='1'){ el.dataset.confirm='1'; el.textContent='Точно удалить?'; return; } closeModal(); return act(()=>api('DELETE','/api/tasks/'+id),'Задача удалена'); }
+  if(el.dataset.pedit) return openPlanEdit(Number(el.dataset.pedit));
   if(el.dataset.plan) return act(()=>api('PATCH','/api/plans/'+el.dataset.plan,{done: el.dataset.done!=='1'}));
-  if(el.dataset.pdel) return act(()=>api('DELETE','/api/plans/'+el.dataset.pdel));
+  if(el.dataset.pdel){ const ser = el.dataset.series==='1'; if(el.closest('.modal') && el.dataset.confirm!=='1'){ el.dataset.confirm='1'; el.textContent = ser?'Удалить все следующие?':'Точно удалить?'; return; } closeModal(); return act(()=>api('DELETE','/api/plans/'+el.dataset.pdel+(ser?'?series=1':'')), ser?'Серия удалена с этого дня':'Пункт удалён'); }
   if(el.dataset.hdel){ if(el.dataset.confirm!=='1'){ el.dataset.confirm='1'; el.style.opacity=1; el.style.color='var(--bad)'; el.textContent='Удалить?'; return; } return act(()=>api('DELETE','/api/habits/'+el.dataset.hdel),'Привычка удалена'); }
   if(el.dataset.hab){ const [hid,d]=el.dataset.hab.split('|'); return act(()=>api('POST','/api/habits/'+hid+'/toggle',{day:d})); }
   if(el.dataset.sw){ const k=el.dataset.sw; const cur = mySettings()[k]!==false; return act(()=>api('PATCH','/api/settings',{[k]:!cur}),'Настройка сохранена'); }
   const a = el.dataset.act;
   if(a==='new') return openNew(el.dataset.for);
   if(a==='invite') return openInvite();
+  if(a==='plan-more') return openPlanNew($('plan-text') ? $('plan-text').value.trim() : '');
   if(a==='editm') return openEditMember(Number(el.dataset.id));
   if(a==='profile') return openProfile();
   if(a==='deactivate'){ if(el.dataset.confirm!=='1'){ el.dataset.confirm='1'; el.textContent='Точно убрать?'; return; } closeModal(); return act(()=>api('PATCH','/api/members/'+el.dataset.id,{active:false}),'Сотрудник убран из команды'); }
@@ -624,6 +672,17 @@ document.addEventListener('submit', async e => {
       closeModal(); await reload(); render(); return toast(Number(who)!==S.me ? `Задача поставлена — ${U(Number(who)).name} получит уведомление` : 'Задача добавлена');
     }
     if(f.id==='add-plan'){ const v=$('plan-text').value.trim(); if(!v) return; await api('POST','/api/plans',{day:DAY,text:v}); await reload(); render(); $('plan-text')?.focus(); return; }
+    if(f.id==='plan-form'){
+      const body = {text:$('pf-text').value, day:$('pf-day').value, time:$('pf-time').value||null, note:$('pf-note').value, repeat:$('pf-repeat').value||null,
+        until:$('pf-until').value, days:[...document.querySelectorAll('input[name=pf-wd]:checked')].map(x=>Number(x.value)), remind:$('pf-remind').checked, important:$('pf-imp').checked};
+      const r = await api('POST','/api/plans', body); closeModal(); DAY = r.from || body.day; await reload(); render();
+      return toast(r.count>1 ? `Добавлено в план: ${r.count} дн. (${fmt(r.from)} — ${fmt(r.to)})` : 'Добавлено в план на '+fmt(body.day));
+    }
+    if(f.id==='plan-edit'){
+      const sc = document.querySelector('input[name=pe-scope]:checked');
+      const body = {text:$('pe-text').value, day:$('pe-day').value, time:$('pe-time').value||null, note:$('pe-note').value, remind:$('pe-remind').checked, important:$('pe-imp').checked, scope: sc?sc.value:'one'};
+      await api('PATCH','/api/plans/'+f.dataset.id, body); closeModal(); await reload(); render(); return toast(body.scope==='series'?'Изменено для всех следующих дней':'Сохранено');
+    }
     if(f.id==='add-habit'){ const v=$('habit-text').value.trim(); if(!v) return; await api('POST','/api/habits',{name:v}); await reload(); return render(); }
     if(f.id==='add-cm'){ const v=$('cm-text').value.trim(); if(!v) return; await api('POST','/api/tasks/'+f.dataset.id+'/comments',{text:v}); await reload(); render(); openTask(Number(f.dataset.id)); return toast('Комментарий отправлен'); }
     if(f.id==='invite-form'){
@@ -649,6 +708,8 @@ document.addEventListener('change', e => {
   if(id==='f-who'){ F.who = e.target.value; return render(); }
   if(id==='i-dept') $('i-newdept-f').hidden = e.target.value!=='new';
   if(id==='e-dept') $('e-newdept-f').hidden = e.target.value!=='new';
+  if(['pf-repeat','pf-time','pf-day','pf-until'].includes(id)) planHint();
+  if(id==='pe-time'){ $('pe-remind').disabled = !e.target.value; if(!e.target.value) $('pe-remind').checked=false; }
   if(id==='i-role'){ const f = e.target.value==='founder'; $('i-boss-f').hidden = f; $('i-founder-note').hidden = !f; }
   if(id==='e-role') $('e-boss-f').hidden = e.target.value==='founder';
   if(id==='switchco' || id==='switchco2'){ if(e.target.value==='new'){ S=null; return screenOnboard(true); } return (async()=>{ await api('POST','/api/switch',{memberId:Number(e.target.value)}); location.hash=''; ME = await api('GET','/api/me'); await reload(); shell(); render(); toast('Компания: '+S.company.name); })(); }
@@ -656,6 +717,7 @@ document.addEventListener('change', e => {
 });
 document.addEventListener('keydown', e => {
   if(e.key==='Escape') closeModal();
+  if(e.key==='Enter' && e.target.dataset && e.target.dataset.pedit){ openPlanEdit(Number(e.target.dataset.pedit)); }
   if((e.metaKey||e.ctrlKey) && e.key.toLowerCase()==='k'){ e.preventDefault(); $('gsearch')?.focus(); }
   if(e.key==='Enter' && e.target.id==='gsearch'){ F.q = e.target.value.trim(); if(current()!=='team' && current()!=='tasks') location.hash='tasks'; render(); }
 });

@@ -245,8 +245,24 @@ button{cursor:pointer}
 .ringrow small{display:block;color:var(--muted)}
 .plan-item{display:flex;align-items:center;gap:12px;padding:10px 4px;border-top:1px solid var(--line)}
 .plan-item:first-of-type{border-top:0}
-.plan-item span{flex:1;min-width:0}
-.plan-item.done span{text-decoration:line-through;color:var(--muted)}
+.plan-item .pi-body{flex:1;min-width:0;cursor:pointer;border-radius:8px;padding:2px 4px}
+.plan-item .pi-body:hover{background:var(--soft)}
+.pi-top{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
+.pi-time{font-size:12px;font-weight:700;color:var(--blue-ink);background:var(--blue-soft);border-radius:6px;padding:1px 6px}
+.pi-star{color:#E9A800}
+.pi-meta{display:flex;gap:10px;flex-wrap:wrap;font-size:12px;color:var(--muted);margin-top:3px}
+.pi-note{white-space:pre-line}
+.plan-item.imp .pi-text{font-weight:700}
+.wdchips{display:flex;gap:6px;flex-wrap:wrap}
+.wdc input{position:absolute;opacity:0;pointer-events:none}
+.wdc span{display:inline-grid;place-items:center;width:40px;height:34px;border-radius:10px;border:1px solid var(--line);background:var(--soft);font-weight:700;font-size:12.5px;cursor:pointer}
+.wdc input:checked+span{background:var(--blue);border-color:var(--blue);color:#fff}
+.wdc input:focus-visible+span{outline:2px solid var(--blue);outline-offset:2px}
+.opts{display:flex;flex-direction:column;gap:8px;margin-bottom:12px}
+.opt{display:flex;gap:10px;align-items:center;font-size:13.5px;cursor:pointer}
+.opt input{width:18px;height:18px;accent-color:var(--blue)}
+.opt input:disabled+span{color:var(--muted)}
+.plan-item.done .pi-text{text-decoration:line-through;color:var(--muted)}
 .del{border:0;background:none;color:var(--muted);opacity:0;padding:4px}
 .plan-item:hover .del{opacity:1}
 .add{display:flex;gap:8px;margin-top:12px}
@@ -339,6 +355,9 @@ button{cursor:pointer}
   .task{grid-template-columns:auto minmax(0,1fr)}
   .task .right{grid-column:2}
   .frow{grid-template-columns:1fr}
+  #add-plan{flex-wrap:wrap}
+  #add-plan input{flex-basis:100%}
+  #add-plan .btn{flex:1;justify-content:center}
   .tbl .hide-s{display:none}
   .toast{bottom:calc(78px + env(safe-area-inset-bottom,0px))}
   .ov-grid .live{min-height:420px}

@@ -176,6 +176,8 @@ CREATE TABLE IF NOT EXISTS kv (
 async function migrate() {
   await q(SCHEMA);
   await q(`ALTER TABLE login_nonces ADD COLUMN IF NOT EXISTS join_code TEXT`);
+  for (const col of ["time TEXT", "note TEXT NOT NULL DEFAULT ''", "series_id TEXT", "repeat TEXT", "remind BOOLEAN NOT NULL DEFAULT false", "reminded BOOLEAN NOT NULL DEFAULT false", "important BOOLEAN NOT NULL DEFAULT false"])
+    await q(`ALTER TABLE plan_items ADD COLUMN IF NOT EXISTS ${col}`);
   await q(`ALTER TABLE members DROP CONSTRAINT IF EXISTS members_role_check`);
   await q(`ALTER TABLE members ADD CONSTRAINT members_role_check CHECK (role IN ('owner','founder','director','manager','worker'))`);
 }

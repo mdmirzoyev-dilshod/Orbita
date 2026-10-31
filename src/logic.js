@@ -84,21 +84,22 @@ async function morningDigest(member) {
   if (tom.length) text += `\n\n🟡 Срок завтра (${tom.length})\n${fmtList(tom)}`;
   if (!over.length && !tod.length && !tom.length) text += `\n\n✅ Срочных задач нет. Всего в работе: ${tasks.length}.`;
   else text += `\n\nВсего в работе: ${tasks.length}`;
-  const plan = await db.all(`SELECT * FROM plan_items WHERE member_id=$1 AND day=$2`, [member.id, t0]);
+  const plan = await db.all(`SELECT * FROM plan_items WHERE member_id=$1 AND day=$2 ORDER BY time NULLS LAST, id`, [member.id, t0]);
   if (!plan.length) text += `\n\n🗓 Запишите план на день в «Моих планах».`;
+  else text += `\n\n🗓 Ваш план на сегодня (${plan.length}):\n${plan.slice(0, 12).map(p => (p.important ? '⭐ ' : '▫️ ') + (p.time ? p.time + ' ' : '') + p.text).join('\n')}`;
   await notify(member.id, text, { kind: 'digest', path: '/#tasks' });
 }
 
 async function eveningDigest(member) {
   const t0 = today();
-  const plan = await db.all(`SELECT * FROM plan_items WHERE member_id=$1 AND day=$2 ORDER BY id`, [member.id, t0]);
+  const plan = await db.all(`SELECT * FROM plan_items WHERE member_id=$1 AND day=$2 ORDER BY time NULLS LAST, id`, [member.id, t0]);
   const habits = await db.all(`SELECT h.name, EXISTS(SELECT 1 FROM habit_marks hm WHERE hm.habit_id=h.id AND hm.day=$2) AS done FROM habits h WHERE h.member_id=$1`, [member.id, t0]);
   if (!plan.length && !habits.length) return;
   let text = '🌙 Итоги дня';
   if (plan.length) {
     const d = plan.filter(p => p.done).length, left = plan.filter(p => !p.done);
     text += `: план выполнен на ${Math.round(d / plan.length * 100)}% (${d} из ${plan.length})`;
-    if (left.length) text += `\n\nОсталось:\n${left.map(p => '▫️ ' + p.text).join('\n')}`;
+    if (left.length) text += `\n\nОсталось:\n${left.map(p => '▫️ ' + (p.time ? p.time + ' ' : '') + p.text).join('\n')}`;
     else text += '\n\n🔥 Всё по плану выполнено!';
   }
   const hl = habits.filter(h => !h.done);
@@ -120,6 +121,12 @@ async function tick() {
         if (r.rowCount) { try { await fn(m); } catch (e) { console.error('[digest]', e); } }
       }
     }
+  }
+  // напоминания по пунктам личного плана (время указано в пункте)
+  const pl = await db.all(`SELECT * FROM plan_items WHERE day=$1 AND remind AND NOT reminded AND NOT done AND time IS NOT NULL AND time <= $2`, [date, time]);
+  for (const p of pl) {
+    await db.q(`UPDATE plan_items SET reminded=true WHERE id=$1`, [p.id]);
+    await notify(p.member_id, `🗓 ${p.time} — ${p.important ? '⭐ ' : ''}${p.text}${p.note ? '\n\n📝 ' + p.note : ''}`, { kind: 'remind', path: '/#plans' });
   }
   // напоминания, указанные в задаче
   const due = await db.all(`SELECT * FROM tasks WHERE remind_at IS NOT NULL AND NOT remind_sent AND status <> 'done' AND remind_at <= $1`, [now]);
