@@ -4,17 +4,19 @@ const tg = require('./tg');
 const { today, nowLocal, addDays, fmtDue, parts } = require('./time');
 
 const STATUS = { new: 'Новая', progress: 'В работе', review: 'На проверке', done: 'Выполнено' };
+const ADMIN = ['owner', 'founder', 'director'];
+const isAdmin = m => Boolean(m) && ADMIN.includes(m.role);
 const PRIO = { high: 'высокий', medium: 'средний', low: 'низкий' };
 
 async function companyMembers(companyId) {
   return db.all(`SELECT m.*, u.name, u.tg_id, u.username, d.name AS dept, d.color AS dept_color
                  FROM members m JOIN users u ON u.id=m.user_id LEFT JOIN depts d ON d.id=m.dept_id
-                 WHERE m.company_id=$1 AND m.active ORDER BY (m.role='owner') DESC, (m.role='manager') DESC, d.name NULLS LAST, u.name`, [companyId]);
+                 WHERE m.company_id=$1 AND m.active ORDER BY (m.role IN ('owner','founder')) DESC, (m.role='director') DESC, (m.role='manager') DESC, d.name NULLS LAST, u.name`, [companyId]);
 }
 
 // Кого видит участник: владелец — всех; руководитель — себя и всех, кто ниже по цепочке подчинения; сотрудник — себя
 function scopeOf(member, members) {
-  if (member.role === 'owner') return members.map(m => m.id);
+  if (isAdmin(member)) return members.map(m => m.id);
   if (member.role === 'worker') return [member.id];
   const ids = new Set([member.id]);
   let grew = true;
@@ -139,4 +141,4 @@ async function tick() {
 }
 function addMinutes(hhmm, n) { const [h, m] = hhmm.split(':').map(Number); const x = h * 60 + m + n; return `${String(Math.min(23, Math.floor(x / 60))).padStart(2, '0')}:${String(x >= 1440 ? 59 : x % 60).padStart(2, '0')}`; }
 
-module.exports = { STATUS, PRIO, companyMembers, scopeOf, notify, memberName, changeStatus, morningDigest, eveningDigest, tick };
+module.exports = { ADMIN, isAdmin, STATUS, PRIO, companyMembers, scopeOf, notify, memberName, changeStatus, morningDigest, eveningDigest, tick };

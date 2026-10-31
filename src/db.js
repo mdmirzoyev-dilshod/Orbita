@@ -59,7 +59,7 @@ CREATE TABLE IF NOT EXISTS members (
   id          SERIAL PRIMARY KEY,
   company_id  INT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
   user_id     INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  role        TEXT NOT NULL CHECK (role IN ('owner','manager','worker')),
+  role        TEXT NOT NULL,
   dept_id     INT REFERENCES depts(id) ON DELETE SET NULL,
   title       TEXT NOT NULL DEFAULT '',
   boss_id     INT REFERENCES members(id) ON DELETE SET NULL,
@@ -176,6 +176,8 @@ CREATE TABLE IF NOT EXISTS kv (
 async function migrate() {
   await q(SCHEMA);
   await q(`ALTER TABLE login_nonces ADD COLUMN IF NOT EXISTS join_code TEXT`);
+  await q(`ALTER TABLE members DROP CONSTRAINT IF EXISTS members_role_check`);
+  await q(`ALTER TABLE members ADD CONSTRAINT members_role_check CHECK (role IN ('owner','founder','director','manager','worker'))`);
 }
 
 module.exports = { pool, q, one, all, tx, migrate };

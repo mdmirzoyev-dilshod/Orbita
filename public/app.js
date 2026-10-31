@@ -54,7 +54,11 @@ async function reload(){ S = await api('GET','/api/state'); TODAY = S.today || T
 const U = id => (S.users.find(u=>u.id===id) || {name:'Бывший сотрудник',dept:'',title:'',deptColor:'#9AA3C7'});
 const me = () => U(S.me);
 const isMgr = () => S.myRole !== 'worker';
-const isOwner = () => S.myRole === 'owner';
+const isOwner = () => Boolean(S.isAdmin);   // учредитель, владелец или директор
+const ROLES = [['worker','Сотрудник'],['manager','Руководитель отдела'],['director','Директор'],['founder','Учредитель']];
+const roleName = u => u.level==='owner' ? 'Владелец' : (ROLES.find(r=>r[0]===u.level)||['',''])[1];
+const roleSelect = (id, sel) => `<select id="${id}">${ROLES.map(([v,l])=>`<option value="${v}" ${v===sel?'selected':''}>${l}</option>`).join('')}</select>`;
+const bossOptions = (except, sel) => S.users.filter(x=>x.role==='manager' && x.id!==except).map(x=>`<option value="${x.id}" ${x.id===sel?'selected':''}>${esc(x.name)}${x.title?' — '+esc(x.title):''}</option>`).join('');
 const late = t => t.status!=='done' && t.due && t.due < TODAY;
 const deptColor = name => { const d = S.depts.find(x=>x.name===name); return d ? d.color : '#9AA3C7'; };
 const AVC = c => c==='#FFD23F' ? '#141729' : c;
@@ -128,7 +132,7 @@ function screenOnboard(another){
   $('root').innerHTML = authShell(`${brand()}<h1>${another?'Новая компания':'Создайте свою компанию'}</h1><p>Вы станете владельцем: сможете приглашать руководителей и сотрудников и ставить задачи.</p>
     <form id="newco" style="display:flex;flex-direction:column;gap:2px">
       <div class="field"><label for="co-me">Как вас подписать</label><input id="co-me" value="${esc(ME.user.name)}" required></div>
-      <div class="field"><label for="co-name">Название компании</label><input id="co-name" placeholder="Например: Fly Marakand" required></div>
+      <div class="field"><label for="co-name">Название компании</label><input id="co-name" placeholder="Название вашей компании" required></div>
       <div class="field"><label for="co-title">Ваша должность</label><input id="co-title" value="Директор"></div>
       <button class="btn primary" type="submit" style="align-self:flex-start;padding:12px 18px">Создать компанию</button>
     </form><p class="note">Если вас пригласили в компанию — откройте ссылку-приглашение от руководителя.</p>${another?'<button class="linkbtn" data-act="back">← Вернуться в мою компанию</button>':'<button class="linkbtn" data-act="logout">Выйти</button>'}`);
@@ -173,7 +177,7 @@ function renderNav(){
   }).join('');
   $('tabbar').innerHTML = routes().map(([k,l]) => `<a href="#${k}" ${k===cur?'aria-current="page"':''}>${ICON[k]}<span>${l.replace('Мои ','')}</span>${k==='alerts'&&unread?'<i class="dot"></i>':''}</a>`).join('');
   const u = me();
-  $('mebox').innerHTML = `<div class="person">${av(u,32)}<div><b>${esc(u.name)}</b><small>${esc(u.title|| (isOwner()?'Владелец':''))}</small></div></div>
+  $('mebox').innerHTML = `<div class="person">${av(u,32)}<div><b>${esc(u.name)}</b><small>${esc(u.title|| roleName(u))}</small></div></div>
     ${coSwitch('switchco')}
     <div style="display:flex;justify-content:space-between;gap:8px"><button class="linkbtn" data-act="profile">Изменить имя</button><button class="linkbtn" data-act="logout">Выйти</button></div>`;
 }
@@ -449,7 +453,7 @@ function vTeam(){
   return header('Команда<span>›</span>Люди', 'Команда', isMgr()?`<button class="btn primary" data-act="invite">${ICON.plus}Пригласить</button>`:'') + `<div class="grid team">${list.map(u=>{
     const mine=S.tasks.filter(t=>t.assignee===u.id), a=mine.filter(t=>t.status!=='done').length, od=mine.filter(late).length, dn=mine.filter(t=>t.status==='done').length;
     const p=planPct(u.id,TODAY), boss = u.boss ? U(u.boss).name : null;
-    return `<div class="card tc"><div class="person">${av(u,42)}<div><b>${esc(u.name)}</b><small>${esc(u.title||(u.owner?'Владелец':''))} · ${esc(u.dept)}</small>${boss?`<small>Руководитель: ${esc(boss)}</small>`:''}</div></div>
+    return `<div class="card tc"><div class="person">${av(u,42)}<div><b>${esc(u.name)}</b><small>${esc(u.title||roleName(u))} · ${esc(u.dept)}</small>${u.title&&roleName(u)?`<small>Роль: ${esc(roleName(u))}</small>`:''}${boss?`<small>Руководитель: ${esc(boss)}</small>`:''}</div></div>
       ${vis(u.id)?`<div class="stats"><div><b class="num">${a}</b><small>в работе</small></div><div><b class="num" style="color:${od?'var(--bad)':'inherit'}">${od}</b><small>просрочено</small></div><div><b class="num">${dn}</b><small>готово</small></div></div>
       <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--muted);margin-bottom:6px"><span>План дня</span><span class="num" style="color:var(--ink);font-weight:700">${p==null?'—':p+'%'}</span></div>
       <div class="bar"><i style="width:${p||0}%"></i></div>`:'<p class="note">Задачи этого сотрудника видит его руководитель.</p>'}
@@ -491,7 +495,7 @@ function openNew(forUser){
   const opts = pool.map(u=>`<option value="${u.id}" ${String(u.id)===String(forUser||(mgr?'':S.me))?'selected':''}>${esc(u.name)}${u.title?' — '+esc(u.title):''}</option>`).join('');
   modal(`<form class="modal" id="new-task" role="dialog" aria-label="Новая задача">
     <h2>${mgr?'Поставить задачу':'Личная задача'}</h2>
-    <div class="field"><label for="n-title">Что нужно сделать</label><input id="n-title" required placeholder="Например: подготовить отчёт по возвратам" autocomplete="off"></div>
+    <div class="field"><label for="n-title">Что нужно сделать</label><input id="n-title" required placeholder="Что нужно сделать" autocomplete="off"></div>
     <div class="field"><label for="n-desc">Подробности</label><textarea id="n-desc" placeholder="Необязательно"></textarea></div>
     <div class="frow"><div class="field"><label for="n-who">Исполнитель</label><select id="n-who" required>${mgr&&!forUser?'<option value="" disabled selected>Выберите</option>':''}${opts}</select></div>
     <div class="field"><label for="n-prio">Приоритет</label><select id="n-prio"><option value="high">Высокий</option><option value="medium" selected>Средний</option><option value="low">Низкий</option></select></div></div>
@@ -521,11 +525,12 @@ function openInvite(){
   modal(`<form class="modal" id="invite-form" role="dialog" aria-label="Пригласить сотрудника">
     <h2>Пригласить сотрудника</h2>
     <p class="note" style="margin:-6px 0 14px">Создадим ссылку. Отправьте её сотруднику в Telegram — он войдёт и сразу попадёт в вашу команду.</p>
-    <div class="frow"><div class="field"><label for="i-title">Должность</label><input id="i-title" placeholder="Например: Авиакассир"></div>
+    <div class="frow"><div class="field"><label for="i-title">Должность</label><input id="i-title" placeholder="Должность сотрудника"></div>
     <div class="field"><label for="i-dept">Отдел</label><select id="i-dept">${deptOptions(isOwner()?'':myDept)}</select></div></div>
-    <div class="field" id="i-newdept-f" hidden><label for="i-newdept">Название нового отдела</label><input id="i-newdept" placeholder="Например: Авиабилеты"></div>
-    ${isOwner()?`<div class="frow"><div class="field"><label for="i-role">Роль</label><select id="i-role"><option value="worker">Сотрудник</option><option value="manager">Руководитель отдела</option></select></div>
-    <div class="field"><label for="i-boss">Подчиняется</label><select id="i-boss">${S.users.filter(u=>u.role==='manager').map(u=>`<option value="${u.id}" ${u.id===S.me?'selected':''}>${esc(u.name)}</option>`).join('')}</select></div></div>`:''}
+    <div class="field" id="i-newdept-f" hidden><label for="i-newdept">Название нового отдела</label><input id="i-newdept" placeholder="Название отдела"></div>
+    ${isOwner()?`<div class="frow"><div class="field"><label for="i-role">Роль</label>${roleSelect('i-role','worker')}</div>
+    <div class="field" id="i-boss-f"><label for="i-boss">Подчиняется</label><select id="i-boss">${bossOptions(null, S.me)}</select></div></div>
+    <p class="note" id="i-founder-note" hidden style="margin:-4px 0 10px">Учредитель никому не подчиняется и видит всю компанию.</p>`:''}
     <div id="i-result"></div>
     <div class="mact"><button type="button" class="btn" data-close="1">Закрыть</button><button class="btn primary" type="submit" id="i-submit">Создать ссылку</button></div>
   </form>`);
@@ -537,8 +542,8 @@ function openEditMember(id){
     <div class="frow"><div class="field"><label for="e-title">Должность</label><input id="e-title" value="${esc(u.title)}"></div>
     <div class="field"><label for="e-dept">Отдел</label><select id="e-dept">${deptOptions(u.deptId)}</select></div></div>
     <div class="field" id="e-newdept-f" hidden><label for="e-newdept">Название нового отдела</label><input id="e-newdept"></div>
-    <div class="frow">${u.owner?'':`<div class="field"><label for="e-role">Роль</label><select id="e-role"><option value="worker" ${u.role==='worker'?'selected':''}>Сотрудник</option><option value="manager" ${u.role==='manager'?'selected':''}>Руководитель отдела</option></select></div>`}
-    <div class="field"><label for="e-boss">Подчиняется</label><select id="e-boss"><option value="">—</option>${S.users.filter(x=>x.role==='manager'&&x.id!==id).map(x=>`<option value="${x.id}" ${u.boss===x.id?'selected':''}>${esc(x.name)}</option>`).join('')}</select></div></div>
+    <div class="frow">${u.owner?'':`<div class="field"><label for="e-role">Роль</label>${roleSelect('e-role',u.level)}</div>`}
+    <div class="field" id="e-boss-f" ${u.level==='founder'?'hidden':''}><label for="e-boss">Подчиняется</label><select id="e-boss"><option value="">—</option>${bossOptions(id, u.boss)}</select></div></div>
     <div class="mact">${u.owner?'':`<button type="button" class="btn" data-act="deactivate" data-id="${id}" style="color:var(--bad);margin-right:auto">Убрать из команды</button>`}<button type="button" class="btn" data-close="1">Отмена</button><button class="btn primary" type="submit">Сохранить</button></div>
   </form>`);
 }
@@ -623,14 +628,14 @@ document.addEventListener('submit', async e => {
     if(f.id==='add-cm'){ const v=$('cm-text').value.trim(); if(!v) return; await api('POST','/api/tasks/'+f.dataset.id+'/comments',{text:v}); await reload(); render(); openTask(Number(f.dataset.id)); return toast('Комментарий отправлен'); }
     if(f.id==='invite-form'){
       const dept = $('i-dept').value;
-      const body = {title:$('i-title').value, deptId: dept==='new'?null:Number(dept), newDept: dept==='new'?$('i-newdept').value:'', role: $('i-role')?$('i-role').value:'worker', bossId: $('i-boss')?Number($('i-boss').value):S.me};
+      const body = {title:$('i-title').value, deptId: dept==='new'?null:Number(dept), newDept: dept==='new'?$('i-newdept').value:'', role: $('i-role')?$('i-role').value:'worker', bossId: $('i-role')&&$('i-role').value==='founder' ? null : ($('i-boss')?Number($('i-boss').value):S.me)};
       if(dept==='new' && !body.newDept.trim()) return toast('Напишите название отдела');
       const r = await api('POST','/api/invites', body);
       $('i-result').innerHTML = `<div class="field"><label>Ссылка-приглашение (действует 14 дней, на одного человека)</label><div class="copyrow"><code>${esc(r.link)}</code><button type="button" class="btn sm primary" data-act="copy" data-v="${esc(r.link)}">Копировать</button></div></div>`;
       $('i-submit').textContent = 'Создать ещё одну'; await reload(); return;
     }
     if(f.id==='edit-member'){
-      const dept = $('e-dept').value, body = {title:$('e-title').value, deptId: dept==='new'?null:Number(dept), newDept: dept==='new'?$('e-newdept').value:'', bossId: $('e-boss').value?Number($('e-boss').value):null};
+      const dept = $('e-dept').value, body = {title:$('e-title').value, deptId: dept==='new'?null:Number(dept), newDept: dept==='new'?$('e-newdept').value:'', bossId: ($('e-role')&&$('e-role').value==='founder') || !$('e-boss').value ? null : Number($('e-boss').value)};
       if($('e-role')) body.role = $('e-role').value;
       await api('PATCH','/api/members/'+f.dataset.id, body); closeModal(); await reload(); render(); return toast('Сохранено');
     }
@@ -644,6 +649,8 @@ document.addEventListener('change', e => {
   if(id==='f-who'){ F.who = e.target.value; return render(); }
   if(id==='i-dept') $('i-newdept-f').hidden = e.target.value!=='new';
   if(id==='e-dept') $('e-newdept-f').hidden = e.target.value!=='new';
+  if(id==='i-role'){ const f = e.target.value==='founder'; $('i-boss-f').hidden = f; $('i-founder-note').hidden = !f; }
+  if(id==='e-role') $('e-boss-f').hidden = e.target.value==='founder';
   if(id==='switchco' || id==='switchco2'){ if(e.target.value==='new'){ S=null; return screenOnboard(true); } return (async()=>{ await api('POST','/api/switch',{memberId:Number(e.target.value)}); location.hash=''; ME = await api('GET','/api/me'); await reload(); shell(); render(); toast('Компания: '+S.company.name); })(); }
   if(id==='s-morning'||id==='s-evening'||id==='s-before') return act(()=>api('PATCH','/api/settings',{[id.slice(2)]: e.target.value}),'Настройка сохранена');
 });

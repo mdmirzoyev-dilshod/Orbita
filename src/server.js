@@ -128,11 +128,12 @@ app.post('/api/invites', auth(), wrap(async (req, res) => {
   }
   if (deptId && !(await db.one(`SELECT 1 FROM depts WHERE id=$1 AND company_id=$2`, [deptId, req.me.company_id]))) return res.status(400).json({ error: 'Отдел не найден' });
   if (!deptId && req.me.role === 'manager') deptId = req.me.dept_id;
-  let role = ['manager', 'worker'].includes(req.body.role) ? req.body.role : 'worker';
-  if (req.me.role !== 'owner') role = 'worker';
+  let role = ['founder', 'director', 'manager', 'worker'].includes(req.body.role) ? req.body.role : 'worker';
+  if (!L.isAdmin(req.me)) role = 'worker';
   let bossId = Number(req.body.bossId) || req.me.id;
   const members = await L.companyMembers(req.me.company_id);
   if (!members.some(m => m.id === bossId)) bossId = req.me.id;
+  if (role === 'founder') bossId = null;   // учредитель никому не подчиняется
   const code = rid(9);
   await db.q(`INSERT INTO invites (code, company_id, role, dept_id, title, boss_id, created_by) VALUES ($1,$2,$3,$4,$5,$6,$7)`,
     [code, req.me.company_id, role, deptId, clean(req.body.title, 60), bossId, req.me.id]);
@@ -187,9 +188,10 @@ app.get('/api/state', auth(), wrap(async (req, res) => {
     company: { id: co.id, name: co.name },
     me: me.id,
     myRole: me.role,
+    isAdmin: L.isAdmin(me),
     scope,
     depts: depts.map(d => ({ id: d.id, name: d.name, color: d.color })),
-    users: members.map(m => ({ id: m.id, name: m.name, role: m.role === 'worker' ? 'worker' : 'manager', owner: m.role === 'owner', dept: m.dept || 'Без отдела', deptId: m.dept_id, deptColor: m.dept_color || '#9AA3C7', title: m.title || '', boss: m.boss_id, tg: Boolean(m.tg_id) && (m.settings || {}).tg !== false, username: m.username })),
+    users: members.map(m => ({ id: m.id, name: m.name, role: m.role === 'worker' ? 'worker' : 'manager', level: m.role, owner: m.role === 'owner', admin: L.ADMIN.includes(m.role), dept: m.dept || 'Без отдела', deptId: m.dept_id, deptColor: m.dept_color || '#9AA3C7', title: m.title || '', boss: m.boss_id, tg: Boolean(m.tg_id) && (m.settings || {}).tg !== false, username: m.username })),
     tasks: tasks.map(t => ({ id: t.id, title: t.title, desc: t.descr, assignee: t.assignee_id, author: t.author_id, priority: t.priority, status: t.status, created: t.created_on, due: t.due, remind: t.remind_at, doneAt: t.done_on,
       comments: comments.filter(c => c.task_id === t.id).map(c => ({ u: c.member_id, t: c.text, at: c.at })) })),
     plans: P,
@@ -204,7 +206,7 @@ app.get('/api/state', auth(), wrap(async (req, res) => {
 async function visibleTask(me, id) {
   const t = await db.one(`SELECT * FROM tasks WHERE id=$1 AND company_id=$2`, [id, me.company_id]);
   if (!t) return null;
-  if (t.assignee_id === me.id || t.author_id === me.id || me.role === 'owner') return t;
+  if (t.assignee_id === me.id || t.author_id === me.id || L.isAdmin(me)) return t;
   if (me.role === 'manager') { const scope = L.scopeOf(me, await L.companyMembers(me.company_id)); if (scope.includes(t.assignee_id)) return t; }
   return null;
 }
@@ -234,7 +236,7 @@ app.patch('/api/tasks/:id', auth(), wrap(async (req, res) => {
     if (!L.STATUS[b.status]) return res.status(400).json({ error: 'Неизвестный статус' });
     await L.changeStatus(t.id, req.me.id, b.status);
   }
-  if (t.author_id === req.me.id || req.me.role === 'owner') {
+  if (t.author_id === req.me.id || L.isAdmin(req.me)) {
     const sets = [], vals = [];
     if (b.title !== undefined && clean(b.title, 200)) { vals.push(clean(b.title, 200)); sets.push(`title=$${vals.length}`); }
     if (b.desc !== undefined) { vals.push(clean(b.desc, 2000)); sets.push(`descr=$${vals.length}`); }
@@ -247,7 +249,7 @@ app.patch('/api/tasks/:id', auth(), wrap(async (req, res) => {
 }));
 app.delete('/api/tasks/:id', auth(), wrap(async (req, res) => {
   const t = await visibleTask(req.me, Number(req.params.id));
-  if (!t || !(t.author_id === req.me.id || req.me.role === 'owner')) return res.status(403).json({ error: 'Удалить может только автор задачи' });
+  if (!t || !(t.author_id === req.me.id || L.isAdmin(req.me))) return res.status(403).json({ error: 'Удалить может только автор задачи' });
   await db.q(`DELETE FROM tasks WHERE id=$1`, [t.id]);
   res.json({ ok: true });
 }));
@@ -313,24 +315,24 @@ app.post('/api/test-message', auth(), wrap(async (req, res) => {
   res.json({ ok: true });
 }));
 app.patch('/api/members/:id', auth(), wrap(async (req, res) => {
-  if (req.me.role !== 'owner') return res.status(403).json({ error: 'Менять сотрудников может только владелец компании' });
+  if (!L.isAdmin(req.me)) return res.status(403).json({ error: 'Менять сотрудников могут учредитель, владелец или директор' });
   const m = await db.one(`SELECT * FROM members WHERE id=$1 AND company_id=$2`, [Number(req.params.id), req.me.company_id]);
   if (!m) return res.status(404).json({ error: 'Сотрудник не найден' });
   const b = req.body;
-  const role = m.role === 'owner' ? 'owner' : (['manager', 'worker'].includes(b.role) ? b.role : m.role);
+  const role = m.role === 'owner' ? 'owner' : (['founder', 'director', 'manager', 'worker'].includes(b.role) ? b.role : m.role);
   let deptId = b.deptId === undefined ? m.dept_id : (Number(b.deptId) || null);
   const newDept = clean(b.newDept, 40);
   if (newDept) {
     const cnt = await db.one(`SELECT count(*)::int AS n FROM depts WHERE company_id=$1`, [req.me.company_id]);
     deptId = (await db.one(`INSERT INTO depts (company_id, name, color) VALUES ($1,$2,$3) ON CONFLICT (company_id, name) DO UPDATE SET name=EXCLUDED.name RETURNING id`, [req.me.company_id, newDept, DEPT_COLORS[cnt.n % DEPT_COLORS.length]])).id;
   }
-  const bossId = b.bossId === undefined ? m.boss_id : (Number(b.bossId) && Number(b.bossId) !== m.id ? Number(b.bossId) : null);
+  const bossId = role === 'founder' ? null : (b.bossId === undefined ? m.boss_id : (Number(b.bossId) && Number(b.bossId) !== m.id ? Number(b.bossId) : null));
   const active = b.active === false && m.role !== 'owner' ? false : m.active;
   await db.q(`UPDATE members SET role=$1, dept_id=$2, title=$3, boss_id=$4, active=$5 WHERE id=$6`, [role, deptId, b.title !== undefined ? clean(b.title, 60) : m.title, bossId, active, m.id]);
   res.json({ ok: true });
 }));
 app.patch('/api/company', auth(), wrap(async (req, res) => {
-  if (req.me.role !== 'owner') return res.status(403).json({ error: 'Только владелец' });
+  if (!L.isAdmin(req.me)) return res.status(403).json({ error: 'Только учредитель, владелец или директор' });
   const name = clean(req.body.name, 80);
   if (name) await db.q(`UPDATE companies SET name=$1 WHERE id=$2`, [name, req.me.company_id]);
   res.json({ ok: true });
