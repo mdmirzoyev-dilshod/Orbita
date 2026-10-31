@@ -345,7 +345,10 @@ app.get('/healthz', wrap(async (req, res) => { await db.q('SELECT 1'); res.json(
 
 /* ---------- интерфейс ---------- */
 app.use(express.static(path.join(__dirname, '..', 'public'), { index: false, maxAge: 0, etag: true }));
-app.get(['/', '/join/:code'], (req, res) => res.sendFile(path.join(__dirname, '..', 'public', 'index.html')));
+// index.html отдаём с версией в ссылке на app.js, чтобы браузер не держал старый интерфейс
+const BUILD = process.env.RAILWAY_GIT_COMMIT_SHA ? process.env.RAILWAY_GIT_COMMIT_SHA.slice(0, 8) : String(Date.now());
+const INDEX = require('fs').readFileSync(path.join(__dirname, '..', 'public', 'index.html'), 'utf8').replace('/app.js"', `/app.js?v=${BUILD}"`);
+app.get(['/', '/join/:code'], (req, res) => { res.set('Cache-Control', 'no-cache'); res.type('html').send(INDEX); });
 
 /* ---------- запуск ---------- */
 async function main() {
