@@ -175,16 +175,18 @@ app.get('/api/state', auth(), wrap(async (req, res) => {
   const t0 = today();
   const tasks = await db.all(`SELECT * FROM tasks WHERE company_id=$1 AND (assignee_id = ANY($2) OR author_id=$3) ORDER BY due, id`, [me.company_id, scope, me.id]);
   const comments = tasks.length ? await db.all(`SELECT * FROM comments WHERE task_id = ANY($1) ORDER BY id`, [tasks.map(t => t.id)]) : [];
-  const plans = await db.all(`SELECT * FROM plan_items WHERE member_id = ANY($1) AND day BETWEEN $2 AND $3 ORDER BY time NULLS LAST, id`, [scope, addDays(t0, -21), addDays(t0, 60)]);
-  const habits = await db.all(`SELECT * FROM habits WHERE member_id=$1 ORDER BY id`, [me.id]);
+  const u2m = new Map(members.filter(m => scope.includes(m.id)).map(m => [m.user_id, m.id]));   // человек → его участие в этой компании
+  const plans = await db.all(`SELECT * FROM plan_items WHERE user_id = ANY($1) AND day BETWEEN $2 AND $3 ORDER BY time NULLS LAST, id`, [[...u2m.keys()], addDays(t0, -21), addDays(t0, 60)]);
+  const habits = await db.all(`SELECT * FROM habits WHERE user_id=$1 ORDER BY id`, [me.user_id]);
   const marks = habits.length ? await db.all(`SELECT * FROM habit_marks WHERE habit_id = ANY($1) AND day >= $2`, [habits.map(h => h.id), addDays(t0, -60)]) : [];
   const notifs = await db.all(`SELECT * FROM notifs WHERE member_id=$1 ORDER BY id DESC LIMIT 100`, [me.id]);
   const depts = await db.all(`SELECT * FROM depts WHERE company_id=$1 ORDER BY id`, [me.company_id]);
 
   const P = {};
   for (const p of plans) {
-    const own = p.member_id === me.id;   // заметки и детали видит только сам человек
-    ((P[p.member_id] ||= {})[p.day] ||= []).push(own
+    const own = p.user_id === me.user_id;   // заметки и детали видит только сам человек
+    const mid = u2m.get(p.user_id);
+    ((P[mid] ||= {})[p.day] ||= []).push(own
       ? { id: p.id, text: p.text, done: p.done, time: p.time, note: p.note, series: p.series_id, repeat: p.repeat, remind: p.remind, important: p.important }
       : { id: p.id, text: p.text, done: p.done });
   }
@@ -300,14 +302,14 @@ app.post('/api/plans', auth(), wrap(async (req, res) => {
   days.forEach((d, i) => {
     const k = i * 9;
     ph.push(`($${k + 1},$${k + 2},$${k + 3},$${k + 4},$${k + 5},$${k + 6},$${k + 7},$${k + 8},$${k + 9})`);
-    vals.push(req.me.id, d, f.text, f.note, f.time, series, repeat, f.remind, f.important);
+    vals.push(req.me.user_id, d, f.text, f.note, f.time, series, repeat, f.remind, f.important);
   });
-  await db.q(`INSERT INTO plan_items (member_id, day, text, note, time, series_id, repeat, remind, important) VALUES ${ph.join(',')}`, vals);
+  await db.q(`INSERT INTO plan_items (user_id, day, text, note, time, series_id, repeat, remind, important) VALUES ${ph.join(',')}`, vals);
   res.json({ ok: true, count: days.length, from: days[0], to: days[days.length - 1] });
 }));
 app.patch('/api/plans/:id', auth(), wrap(async (req, res) => {
   const b = req.body, id = Number(req.params.id);
-  const p = await db.one(`SELECT * FROM plan_items WHERE id=$1 AND member_id=$2`, [id, req.me.id]);
+  const p = await db.one(`SELECT * FROM plan_items WHERE id=$1 AND user_id=$2`, [id, req.me.user_id]);
   if (!p) return res.status(404).json({ error: 'Пункт не найден' });
   if (typeof b.done === 'boolean' && Object.keys(b).length === 1) {
     await db.q(`UPDATE plan_items SET done=$1 WHERE id=$2`, [b.done, id]);
@@ -319,7 +321,7 @@ app.patch('/api/plans/:id', auth(), wrap(async (req, res) => {
   if (b.scope === 'series' && p.series_id) {
     // изменить этот и все следующие дни серии (дату не трогаем)
     await db.q(`UPDATE plan_items SET text=$1, note=$2, time=$3, remind=$4, important=$5, reminded = CASE WHEN $6 THEN false ELSE reminded END
-                WHERE series_id=$7 AND member_id=$8 AND day >= $9`, [f.text, f.note, f.time, f.remind, f.important, timeChanged, p.series_id, req.me.id, p.day]);
+                WHERE series_id=$7 AND user_id=$8 AND day >= $9`, [f.text, f.note, f.time, f.remind, f.important, timeChanged, p.series_id, req.me.user_id, p.day]);
   } else {
     const day = isDate(b.day) ? b.day : p.day;
     await db.q(`UPDATE plan_items SET text=$1, note=$2, time=$3, remind=$4, important=$5, day=$6, reminded = CASE WHEN $7 OR $6 <> day THEN false ELSE reminded END WHERE id=$8`,
@@ -328,10 +330,10 @@ app.patch('/api/plans/:id', auth(), wrap(async (req, res) => {
   res.json({ ok: true });
 }));
 app.delete('/api/plans/:id', auth(), wrap(async (req, res) => {
-  const p = await db.one(`SELECT * FROM plan_items WHERE id=$1 AND member_id=$2`, [Number(req.params.id), req.me.id]);
+  const p = await db.one(`SELECT * FROM plan_items WHERE id=$1 AND user_id=$2`, [Number(req.params.id), req.me.user_id]);
   if (!p) return res.json({ ok: true });
   if (req.query.series === '1' && p.series_id) {
-    const r = await db.q(`DELETE FROM plan_items WHERE series_id=$1 AND member_id=$2 AND day >= $3`, [p.series_id, req.me.id, p.day]);
+    const r = await db.q(`DELETE FROM plan_items WHERE series_id=$1 AND user_id=$2 AND day >= $3`, [p.series_id, req.me.user_id, p.day]);
     return res.json({ ok: true, count: r.rowCount });
   }
   await db.q(`DELETE FROM plan_items WHERE id=$1`, [p.id]);
@@ -355,12 +357,12 @@ app.post('/api/habits', auth(), wrap(async (req, res) => {
   const f = habitFields(req.body);
   if (!f.name) return res.status(400).json({ error: 'Напишите название привычки' });
   if (f.until && f.until < f.start) return res.status(400).json({ error: 'Дата окончания раньше даты начала' });
-  await db.q(`INSERT INTO habits (member_id, name, note, wdays, start_on, until, time, remind) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-    [req.me.id, f.name, f.note, f.wdays, f.start, f.until, f.time, f.remind]);
+  await db.q(`INSERT INTO habits (user_id, name, note, wdays, start_on, until, time, remind) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+    [req.me.user_id, f.name, f.note, f.wdays, f.start, f.until, f.time, f.remind]);
   res.json({ ok: true });
 }));
 app.patch('/api/habits/:id', auth(), wrap(async (req, res) => {
-  const h = await db.one(`SELECT * FROM habits WHERE id=$1 AND member_id=$2`, [Number(req.params.id), req.me.id]);
+  const h = await db.one(`SELECT * FROM habits WHERE id=$1 AND user_id=$2`, [Number(req.params.id), req.me.user_id]);
   if (!h) return res.status(404).json({ error: 'Привычка не найдена' });
   const f = habitFields(req.body, h);
   if (!f.name) return res.status(400).json({ error: 'Название не может быть пустым' });
@@ -370,14 +372,14 @@ app.patch('/api/habits/:id', auth(), wrap(async (req, res) => {
   res.json({ ok: true });
 }));
 app.post('/api/habits/:id/toggle', auth(), wrap(async (req, res) => {
-  const h = await db.one(`SELECT * FROM habits WHERE id=$1 AND member_id=$2`, [Number(req.params.id), req.me.id]);
+  const h = await db.one(`SELECT * FROM habits WHERE id=$1 AND user_id=$2`, [Number(req.params.id), req.me.user_id]);
   if (!h || !isDate(req.body.day)) return res.status(404).json({ error: 'Привычка не найдена' });
   const r = await db.q(`DELETE FROM habit_marks WHERE habit_id=$1 AND day=$2`, [h.id, req.body.day]);
   if (!r.rowCount) await db.q(`INSERT INTO habit_marks (habit_id, day) VALUES ($1,$2)`, [h.id, req.body.day]);
   res.json({ ok: true });
 }));
 app.delete('/api/habits/:id', auth(), wrap(async (req, res) => {
-  await db.q(`DELETE FROM habits WHERE id=$1 AND member_id=$2`, [Number(req.params.id), req.me.id]);
+  await db.q(`DELETE FROM habits WHERE id=$1 AND user_id=$2`, [Number(req.params.id), req.me.user_id]);
   res.json({ ok: true });
 }));
 

@@ -180,6 +180,21 @@ async function migrate() {
     await q(`ALTER TABLE plan_items ADD COLUMN IF NOT EXISTS ${col}`);
   for (const col of ["note TEXT NOT NULL DEFAULT ''", "wdays TEXT NOT NULL DEFAULT '0123456'", "start_on DATE", "until DATE", "time TEXT", "remind BOOLEAN NOT NULL DEFAULT false", "last_reminded DATE"])
     await q(`ALTER TABLE habits ADD COLUMN IF NOT EXISTS ${col}`);
+  // планы и привычки принадлежат человеку (user), а не компании — общие во всех его компаниях
+  for (const t of ['plan_items', 'habits']) {
+    await q(`ALTER TABLE ${t} ADD COLUMN IF NOT EXISTS user_id INT REFERENCES users(id) ON DELETE CASCADE`);
+    await q(`ALTER TABLE ${t} ALTER COLUMN member_id DROP NOT NULL`);
+    await q(`UPDATE ${t} x SET user_id = m.user_id FROM members m WHERE m.id = x.member_id AND x.user_id IS NULL`);
+    await q(`CREATE INDEX IF NOT EXISTS ${t}_user ON ${t}(user_id)`);
+  }
+  // объединить одинаковые привычки из разных компаний (отметки переносятся)
+  await q(`INSERT INTO habit_marks (habit_id, day)
+           SELECT k.keep, hm.day FROM habit_marks hm JOIN habits h ON h.id = hm.habit_id
+           JOIN (SELECT user_id, lower(name) AS n, min(id) AS keep FROM habits GROUP BY user_id, lower(name)) k ON k.user_id = h.user_id AND k.n = lower(h.name)
+           WHERE h.id <> k.keep ON CONFLICT DO NOTHING`);
+  await q(`DELETE FROM habits h USING habits h2 WHERE h.user_id = h2.user_id AND lower(h.name) = lower(h2.name) AND h.id > h2.id`);
+  await q(`DELETE FROM plan_items p USING plan_items p2 WHERE p.user_id = p2.user_id AND p.day = p2.day AND p.text = p2.text
+           AND p.time IS NOT DISTINCT FROM p2.time AND p.id > p2.id`);
   await q(`ALTER TABLE members DROP CONSTRAINT IF EXISTS members_role_check`);
   await q(`ALTER TABLE members ADD CONSTRAINT members_role_check CHECK (role IN ('owner','founder','director','manager','worker'))`);
 }

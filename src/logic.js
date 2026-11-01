@@ -41,6 +41,13 @@ async function notify(memberId, text, opts = {}) {
   await tg.send(m.tg_id, text, { doneTaskId: opts.doneTaskId, path: opts.path });
 }
 
+// Основное участие человека (самое раннее активное) — туда идут личные напоминания и итоги дня
+async function primaryMemberId(userId) {
+  const r = await db.one(`SELECT id FROM members WHERE user_id=$1 AND active ORDER BY created_at, id LIMIT 1`, [userId]);
+  return r ? r.id : null;
+}
+async function isPrimary(member) { return (await primaryMemberId(member.user_id)) === member.id; }
+
 async function memberName(id) {
   const r = await db.one(`SELECT u.name FROM members m JOIN users u ON u.id=m.user_id WHERE m.id=$1`, [id]);
   return r ? r.name : 'Сотрудник';
@@ -84,18 +91,21 @@ async function morningDigest(member) {
   if (tom.length) text += `\n\n🟡 Срок завтра (${tom.length})\n${fmtList(tom)}`;
   if (!over.length && !tod.length && !tom.length) text += `\n\n✅ Срочных задач нет. Всего в работе: ${tasks.length}.`;
   else text += `\n\nВсего в работе: ${tasks.length}`;
-  const plan = await db.all(`SELECT * FROM plan_items WHERE member_id=$1 AND day=$2 ORDER BY time NULLS LAST, id`, [member.id, t0]);
-  if (!plan.length) text += `\n\n🗓 Запишите план на день в «Моих планах».`;
+  const primary = await isPrimary(member);
+  const plan = primary ? await db.all(`SELECT * FROM plan_items WHERE user_id=$1 AND day=$2 ORDER BY time NULLS LAST, id`, [member.user_id, t0]) : [];
+  if (!primary) { /* план показываем в одной компании, чтобы не дублировать */ }
+  else if (!plan.length) text += `\n\n🗓 Запишите план на день в «Моих планах».`;
   else text += `\n\n🗓 Ваш план на сегодня (${plan.length}):\n${plan.slice(0, 12).map(p => (p.important ? '⭐ ' : '▫️ ') + (p.time ? p.time + ' ' : '') + p.text).join('\n')}`;
   await notify(member.id, text, { kind: 'digest', path: '/#tasks' });
 }
 
 async function eveningDigest(member) {
   const t0 = today();
-  const plan = await db.all(`SELECT * FROM plan_items WHERE member_id=$1 AND day=$2 ORDER BY time NULLS LAST, id`, [member.id, t0]);
+  if (!(await isPrimary(member))) return;   // итоги дня — одни на человека, а не в каждой компании
+  const plan = await db.all(`SELECT * FROM plan_items WHERE user_id=$1 AND day=$2 ORDER BY time NULLS LAST, id`, [member.user_id, t0]);
   const wd = String(new Date(t0 + 'T12:00:00Z').getUTCDay());
   const habits = (await db.all(`SELECT h.name, h.wdays, EXISTS(SELECT 1 FROM habit_marks hm WHERE hm.habit_id=h.id AND hm.day=$2) AS done FROM habits h
-     WHERE h.member_id=$1 AND (h.start_on IS NULL OR h.start_on <= $2) AND (h.until IS NULL OR h.until >= $2)`, [member.id, t0])).filter(h => (h.wdays || '0123456').includes(wd));
+     WHERE h.user_id=$1 AND (h.start_on IS NULL OR h.start_on <= $2) AND (h.until IS NULL OR h.until >= $2)`, [member.user_id, t0])).filter(h => (h.wdays || '0123456').includes(wd));
   if (!plan.length && !habits.length) return;
   let text = '🌙 Итоги дня';
   if (plan.length) {
@@ -128,7 +138,8 @@ async function tick() {
   const pl = await db.all(`SELECT * FROM plan_items WHERE day=$1 AND remind AND NOT reminded AND NOT done AND time IS NOT NULL AND time <= $2`, [date, time]);
   for (const p of pl) {
     await db.q(`UPDATE plan_items SET reminded=true WHERE id=$1`, [p.id]);
-    await notify(p.member_id, `🗓 ${p.time} — ${p.important ? '⭐ ' : ''}${p.text}${p.note ? '\n\n📝 ' + p.note : ''}`, { kind: 'remind', path: '/#plans' });
+    const pm = await primaryMemberId(p.user_id); if (!pm) continue;
+    await notify(pm, `🗓 ${p.time} — ${p.important ? '⭐ ' : ''}${p.text}${p.note ? '\n\n📝 ' + p.note : ''}`, { kind: 'remind', path: '/#plans' });
   }
   // напоминания по привычкам (в дни расписания, если ещё не отмечена)
   const wdNow = String(new Date(`${date}T12:00:00Z`).getUTCDay());
@@ -138,7 +149,8 @@ async function tick() {
   for (const h of hs) {
     if (!(h.wdays || '0123456').includes(wdNow)) continue;
     await db.q(`UPDATE habits SET last_reminded=$1 WHERE id=$2`, [date, h.id]);
-    await notify(h.member_id, `💪 Привычка: ${h.name}${h.note ? '\n🎯 ' + h.note : ''}\n\nНе забудьте отметить в «Моих планах».`, { kind: 'remind', path: '/#plans' });
+    const hm = await primaryMemberId(h.user_id); if (!hm) continue;
+    await notify(hm, `💪 Привычка: ${h.name}${h.note ? '\n🎯 ' + h.note : ''}\n\nНе забудьте отметить в «Моих планах».`, { kind: 'remind', path: '/#plans' });
   }
   // напоминания, указанные в задаче
   const due = await db.all(`SELECT * FROM tasks WHERE remind_at IS NOT NULL AND NOT remind_sent AND status <> 'done' AND remind_at <= $1`, [now]);

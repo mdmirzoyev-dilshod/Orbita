@@ -82,7 +82,7 @@ async function onMessage(m) {
     return send(chat, `📋 Ваши задачи (${tasks.length})\n\n${lines.join('\n')}`, { path: '/#tasks' });
   }
   if (text.startsWith('/plan')) {
-    const items = await db.all(`SELECT * FROM plan_items WHERE member_id = ANY($1) AND day=$2 ORDER BY time NULLS LAST, id`, [members.map(x => x.id), today()]);
+    const items = await db.all(`SELECT * FROM plan_items WHERE user_id=$1 AND day=$2 ORDER BY time NULLS LAST, id`, [user.id, today()]);
     if (!items.length) return send(chat, 'На сегодня план пуст. Добавьте пункты на сайте в разделе «Мои планы».', { path: '/#plans' });
     const done = items.filter(i => i.done).length;
     return send(chat, `🗓 План на сегодня: ${done} из ${items.length}\n\n${items.map(i => (i.done ? '✅ ' : i.important ? '⭐ ' : '▫️ ') + (i.time ? i.time + ' ' : '') + i.text).join('\n')}`, { path: '/#plans' });
