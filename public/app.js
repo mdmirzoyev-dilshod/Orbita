@@ -508,6 +508,7 @@ function openNew(forUser){
   const opts = pool.map(u=>`<option value="${u.id}" ${String(u.id)===String(forUser||(mgr?'':S.me))?'selected':''}>${esc(u.name)}${u.title?' — '+esc(u.title):''}</option>`).join('');
   modal(`<form class="modal" id="new-task" role="dialog" aria-label="Новая задача">
     <h2>${mgr?'Поставить задачу':'Личная задача'}</h2>
+    ${mgr && pool.length<=1 ? `<div class="demo-note card" style="margin-bottom:14px">В команде пока только вы, поэтому исполнителем можно выбрать только себя. ${isOwner()?'<button type="button" class="btn sm" data-act="demo-add-close">Добавить демо-сотрудников</button> ':''}<button type="button" class="btn sm" data-act="invite">Пригласить сотрудника</button></div>` : ''}
     <div class="field"><label for="n-title">Что нужно сделать</label><input id="n-title" required placeholder="Что нужно сделать" autocomplete="off"></div>
     <div class="field"><label for="n-desc">Подробности</label><textarea id="n-desc" placeholder="Необязательно"></textarea></div>
     <div class="frow"><div class="field"><label for="n-who">Исполнитель</label><select id="n-who" required>${mgr&&!forUser?'<option value="" disabled selected>Выберите</option>':''}${opts}</select></div>
@@ -678,6 +679,7 @@ document.addEventListener('click', e => {
   const a = el.dataset.act;
   if(a==='new') return openNew(el.dataset.for);
   if(a==='invite') return openInvite();
+  if(a==='demo-add-close'){ closeModal(); return act(()=>api('POST','/api/demo'),'Добавлены 3 демо-сотрудника — теперь им можно ставить задачи').then(()=>openNew()); }
   if(a==='demo-add') return act(()=>api('POST','/api/demo'),'Добавлены 3 демо-сотрудника с задачами').then(()=>{ location.hash='team'; });
   if(a==='demo-del'){ if(el.dataset.confirm!=='1'){ el.dataset.confirm='1'; el.textContent='Точно удалить демо?'; return; } return act(()=>api('DELETE','/api/demo'),'Демо-сотрудники удалены'); }
   if(a==='viewas') return (async()=>{ try { await api('POST','/api/view-as',{memberId:Number(el.dataset.id)}); location.hash=''; await boot(); toast('Вы вошли как '+me().name); } catch(err){ toast(err.message); } })();
