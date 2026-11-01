@@ -39,7 +39,7 @@ async function send(chatId, text, opts = {}) {
   const r = await call('sendMessage', { chat_id: chatId, text, disable_web_page_preview: true, reply_markup: rows.length ? { inline_keyboard: rows } : undefined });
   // запоминаем, к какой задаче относится сообщение — чтобы ответ на него стал комментарием
   const taskId = opts.taskId || opts.doneTaskId;
-  if (taskId && r && r.ok) await db.q(`INSERT INTO tg_msgs (chat_id, message_id, task_id) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING`, [chatId, r.result.message_id, taskId]).catch(() => {});
+  if (taskId && r && r.ok) await db.q(`INSERT INTO tg_msgs (chat_id, message_id, task_id) VALUES ($1,$2,$3) ON CONFLICT (chat_id, message_id) DO UPDATE SET task_id=EXCLUDED.task_id`, [chatId, r.result.message_id, taskId]).catch(() => {});
   return r;
 }
 

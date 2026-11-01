@@ -176,7 +176,7 @@ async function callback(cq) {
   await db.q(`UPDATE ai_drafts SET used=true WHERE id=$1`, [id]);
   await answer('Задача поставлена ✅');
   await edit(`✅ Задача поставлена${a.me ? '' : ' — ' + plainName(a.name) + ' получил(а) уведомление'}\n\n«${d.title}»\n📅 Срок: ${fmtDue(d.due)}${d.dueTime ? ' до ' + d.dueTime : ''} · ${PRIO_RU[d.priority]}`);
-  if (msg) await db.q(`INSERT INTO tg_msgs (chat_id, message_id, task_id) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING`, [msg.chat.id, msg.message_id, r.task.id]);
+  if (msg) await db.q(`INSERT INTO tg_msgs (chat_id, message_id, task_id) VALUES ($1,$2,$3) ON CONFLICT (chat_id, message_id) DO UPDATE SET task_id=EXCLUDED.task_id`, [msg.chat.id, msg.message_id, r.task.id]);
   return true;
 }
 
