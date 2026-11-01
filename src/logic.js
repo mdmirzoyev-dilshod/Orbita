@@ -38,7 +38,7 @@ async function notify(memberId, text, opts = {}) {
   if (s.tg === false) return;
   if (opts.kind === 'assign' && s.onAssign === false) return;
   if (['done', 'status', 'comment', 'review'].includes(opts.kind) && s.onDone === false) return;
-  await tg.send(m.tg_id, text, { doneTaskId: opts.doneTaskId, path: opts.path });
+  await tg.send(m.tg_id, text, { doneTaskId: opts.doneTaskId, path: opts.path, buttons: opts.buttons });
 }
 
 // Основное участие человека (самое раннее активное) — туда идут личные напоминания и итоги дня
@@ -158,11 +158,23 @@ async function tick() {
     await db.q(`UPDATE tasks SET remind_sent=true WHERE id=$1`, [t.id]);
     await notify(t.assignee_id, `⏰ Напоминание\n«${t.title}»\nСрок: ${fmtDue(t.due)} · Приоритет: ${PRIO[t.priority]}`, { kind: 'remind', doneTaskId: t.id, path: '/#tasks' });
   }
-  // напоминание до срока (срок задачи — конец рабочего дня 18:00)
+  // срок истёк: исполнителю — напоминание, поставившему задачу — кнопки «продлить»
+  const late = await db.all(`SELECT * FROM tasks WHERE status <> 'done' AND NOT overdue_sent AND due <= $1`, [date]);
+  for (const t of late) {
+    const passed = t.due_time ? now >= `${t.due}T${t.due_time}` : (t.due < date && time >= '09:00');
+    if (!passed) continue;
+    await db.q(`UPDATE tasks SET overdue_sent=true WHERE id=$1`, [t.id]);
+    const was = dueLabel(t.due, t.due_time), who = await memberName(t.assignee_id);
+    await notify(t.assignee_id, `🔴 Срок истёк\n«${t.title}»\nСрок был: ${was}\n\nЕсли нужно больше времени — напишите в комментарии к задаче.`, { kind: 'overdue', doneTaskId: t.id, path: '/#tasks' });
+    for (const to of await extendersToNotify(t)) {
+      await notify(to, `🔴 Просрочена задача\nИсполнитель: ${who}\n«${t.title}»\nСрок был: ${was}\n\nДобавить время?`, { kind: 'overdue', path: '/#tasks', buttons: EXT_BUTTONS(t.id) });
+    }
+  }
+  // напоминание до срока (срок задачи — указанное время, по умолчанию 18:00)
   const open = await db.all(`SELECT t.*, m.settings FROM tasks t JOIN members m ON m.id=t.assignee_id WHERE t.status <> 'done' AND NOT t.before_sent AND t.due >= $1 AND t.due <= $2`, [addDays(date, -1), addDays(date, 2)]);
   for (const t of open) {
     const before = Number((t.settings || {}).before || 2);
-    const dueAt = new Date(`${t.due}T18:00:00Z`).getTime() - before * 3600e3;
+    const dueAt = new Date(`${t.due}T${t.due_time || '18:00'}:00Z`).getTime() - before * 3600e3;
     const nowMs = new Date(`${now}:00Z`).getTime();
     if (nowMs >= dueAt) {
       await db.q(`UPDATE tasks SET before_sent=true WHERE id=$1`, [t.id]);
@@ -170,6 +182,64 @@ async function tick() {
     }
   }
 }
+/* ---------- продление срока ---------- */
+const EXT = { '2h': { hours: 2, label: '+2 часа' }, '1d': { days: 1, label: '+1 день' }, '3d': { days: 3, label: '+3 дня' }, '7d': { days: 7, label: '+неделя' } };
+const EXT_BUTTONS = id => [[{ text: '+2 часа', callback_data: `ext:${id}:2h` }, { text: '+1 день', callback_data: `ext:${id}:1d` }], [{ text: '+3 дня', callback_data: `ext:${id}:3d` }, { text: '+неделя', callback_data: `ext:${id}:7d` }]];
+const dueLabel = (d, tm) => `${fmtDue(d)}${tm ? ' до ' + tm : ''}`;
+// кто может продлить: автор, руководство компании или руководитель исполнителя (но не сам исполнитель, если он не автор)
+async function canExtend(member, t) {
+  if (!member || !member.active || member.company_id !== t.company_id) return false;
+  if (member.id === t.author_id || isAdmin(member)) return true;
+  if (member.id === t.assignee_id) return false;
+  return scopeOf(member, await companyMembers(t.company_id)).includes(t.assignee_id);
+}
+// кому слать кнопки «продлить»: автору; если у автора нет Telegram или он сам исполнитель — его руководителю
+async function extendersToNotify(t) {
+  const out = new Set();
+  const au = t.author_id && await db.one(`SELECT m.id, m.boss_id, u.tg_id FROM members m JOIN users u ON u.id=m.user_id WHERE m.id=$1 AND m.active`, [t.author_id]);
+  if (au && au.id !== t.assignee_id) out.add(au.id);
+  if (au && !au.tg_id && au.boss_id) out.add(au.boss_id);   // у автора нет Telegram — сообщаем его руководителю
+  if (!au || au.id === t.assignee_id) {
+    const as = await db.one(`SELECT boss_id FROM members WHERE id=$1`, [t.assignee_id]);
+    if (as && as.boss_id) out.add(as.boss_id);
+  }
+  out.delete(t.assignee_id);
+  return [...out];
+}
+async function extendTask(taskId, actor, opt) {
+  const t = await db.one(`SELECT * FROM tasks WHERE id=$1`, [taskId]);
+  if (!t) return { error: 'Задача не найдена' };
+  if (t.status === 'done') return { error: 'Задача уже выполнена' };
+  if (!(await canExtend(actor, t))) return { error: 'Продлить срок может тот, кто поставил задачу, или руководитель' };
+  const now = nowLocal();
+  let nd, nt;
+  if (opt.due) { nd = opt.due; nt = opt.dueTime || null; }
+  else if (opt.hours) {
+    const dl = `${t.due}T${t.due_time || '18:00'}`;
+    const base = dl > now ? dl : now;
+    const x = new Date(base + ':00Z'); x.setUTCMinutes(x.getUTCMinutes() + opt.hours * 60);
+    const iso = x.toISOString(); nd = iso.slice(0, 10); nt = iso.slice(11, 16);
+  } else {
+    const baseDay = t.due >= today() && !t.overdue_sent ? t.due : today();
+    nd = addDays(baseDay, opt.days || 1); nt = t.due_time;
+  }
+  if (`${nd}T${nt || '23:59'}` <= now) return { error: 'Новый срок уже прошёл — выберите позже' };
+  await db.q(`UPDATE tasks SET due=$1, due_time=$2, overdue_sent=false, before_sent=$3, extended=extended+1 WHERE id=$4`, [nd, nt, Boolean(opt.hours), t.id]);
+  const label = dueLabel(nd, nt), was = dueLabel(t.due, t.due_time);
+  await db.q(`INSERT INTO comments (task_id, member_id, text, at) VALUES ($1,$2,$3,$4)`, [t.id, actor.id, `⏱ Срок продлён до ${label} (был ${was})`, now]);
+  if (t.assignee_id !== actor.id) {
+    const who = await memberName(actor.id);
+    await notify(t.assignee_id, `⏱ ${who} продлил срок\n«${t.title}»\nНовый срок: ${label}`, { kind: 'assign', doneTaskId: t.id, path: '/#tasks' });
+  }
+  return { ok: true, label, due: nd, dueTime: nt };
+}
+tg.handlers.extend = async (taskId, userId, code) => {
+  const t = await db.one(`SELECT company_id FROM tasks WHERE id=$1`, [taskId]);
+  if (!t || !EXT[code]) return { error: 'Задача не найдена' };
+  const actor = await db.one(`SELECT * FROM members WHERE company_id=$1 AND user_id=$2 AND active`, [t.company_id, userId]);
+  return extendTask(taskId, actor, EXT[code]);
+};
+
 function addMinutes(hhmm, n) { const [h, m] = hhmm.split(':').map(Number); const x = h * 60 + m + n; return `${String(Math.min(23, Math.floor(x / 60))).padStart(2, '0')}:${String(x >= 1440 ? 59 : x % 60).padStart(2, '0')}`; }
 
-module.exports = { ADMIN, isAdmin, STATUS, PRIO, companyMembers, scopeOf, notify, memberName, changeStatus, morningDigest, eveningDigest, tick };
+module.exports = { EXT, extendTask, canExtend, ADMIN, isAdmin, STATUS, PRIO, companyMembers, scopeOf, notify, memberName, changeStatus, morningDigest, eveningDigest, tick };

@@ -5,7 +5,7 @@ const { today, fmtDue } = require('./time');
 const TOKEN = process.env.BOT_TOKEN || '';
 const API = `https://api.telegram.org/bot${TOKEN}`;
 let BOT_USERNAME = process.env.BOT_USERNAME || '';
-const handlers = { done: null };   // заполняется сервером (смена статуса с уведомлениями)
+const handlers = { done: null, extend: null };   // заполняется сервером (смена статуса с уведомлениями)
 
 const appUrl = () => process.env.APP_URL || (process.env.RAILWAY_PUBLIC_DOMAIN ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}` : '');
 const enabled = () => Boolean(TOKEN);
@@ -33,6 +33,7 @@ async function send(chatId, text, opts = {}) {
   if (!chatId || !TOKEN) return null;
   const rows = [];
   if (opts.doneTaskId) rows.push([{ text: '✅ Выполнено', callback_data: `done:${opts.doneTaskId}` }]);
+  if (opts.buttons) rows.push(...opts.buttons);
   const ob = openButton(opts.path);
   if (ob && opts.open !== false) rows.push(ob);
   return call('sendMessage', { chat_id: chatId, text, disable_web_page_preview: true, reply_markup: rows.length ? { inline_keyboard: rows } : undefined });
@@ -113,6 +114,14 @@ async function onCallback(cq) {
     const r = user ? await db.q(`DELETE FROM wallet_tx WHERE id=$1 AND user_id=$2`, [Number(data.slice(5)), user.id]) : { rowCount: 0 };
     await call('answerCallbackQuery', { callback_query_id: cq.id, text: r.rowCount ? 'Запись удалена' : 'Запись уже удалена' });
     if (cq.message && r.rowCount) await call('editMessageText', { chat_id: cq.message.chat.id, message_id: cq.message.message_id, text: '↩️ Запись отменена' });
+    return;
+  }
+  if (data.startsWith('ext:')) {
+    const [, id, code] = data.split(':');
+    const user = await db.one(`SELECT * FROM users WHERE tg_id=$1`, [cq.from.id]);
+    const r = user && handlers.extend ? await handlers.extend(Number(id), user.id, code) : { error: 'Нет доступа' };
+    await call('answerCallbackQuery', { callback_query_id: cq.id, text: r.error || `Срок продлён: ${r.label}`, show_alert: Boolean(r.error) });
+    if (cq.message && !r.error) await call('editMessageReplyMarkup', { chat_id: cq.message.chat.id, message_id: cq.message.message_id, reply_markup: { inline_keyboard: [[{ text: `⏱ Продлено до ${r.label}`, callback_data: 'noop' }]] } });
     return;
   }
   if (data.startsWith('done:')) {

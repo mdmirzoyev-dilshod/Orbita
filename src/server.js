@@ -199,7 +199,7 @@ app.get('/api/state', auth(), wrap(async (req, res) => {
     scope,
     depts: depts.map(d => ({ id: d.id, name: d.name, color: d.color })),
     users: members.map(m => ({ id: m.id, name: m.name, demo: Boolean(m.demo), role: m.role === 'worker' ? 'worker' : 'manager', level: m.role, owner: m.role === 'owner', admin: L.ADMIN.includes(m.role), dept: m.dept || 'Без отдела', deptId: m.dept_id, deptColor: m.dept_color || '#9AA3C7', title: m.title || '', boss: m.boss_id, tg: Boolean(m.tg_id) && (m.settings || {}).tg !== false, username: m.username })),
-    tasks: tasks.map(t => ({ id: t.id, title: t.title, desc: t.descr, assignee: t.assignee_id, author: t.author_id, priority: t.priority, status: t.status, created: t.created_on, due: t.due, remind: t.remind_at, doneAt: t.done_on,
+    tasks: tasks.map(t => ({ id: t.id, title: t.title, desc: t.descr, assignee: t.assignee_id, author: t.author_id, priority: t.priority, status: t.status, created: t.created_on, due: t.due, dueTime: t.due_time, ext: t.extended, remind: t.remind_at, doneAt: t.done_on,
       comments: comments.filter(c => c.task_id === t.id).map(c => ({ u: c.member_id, t: c.text, at: c.at })) })),
     plans: P,
     habits: habits.map(h => ({ id: h.id, name: h.name, note: h.note, wdays: h.wdays, start: h.start_on, until: h.until, time: h.time, remind: h.remind, days: Object.fromEntries(marks.filter(m => m.habit_id === h.id).map(m => [m.day, true])) })),
@@ -227,11 +227,12 @@ app.post('/api/tasks', auth(), wrap(async (req, res) => {
   const due = isDate(b.due) ? b.due : addDays(today(), 1);
   const remind = isDT(b.remind) ? b.remind : null;
   const priority = ['high', 'medium', 'low'].includes(b.priority) ? b.priority : 'medium';
-  const t = await db.one(`INSERT INTO tasks (company_id, title, descr, assignee_id, author_id, priority, created_on, due, remind_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
-    [me.company_id, title, clean(b.desc, 2000), assignee, me.id, priority, today(), due, remind]);
+  const dueTime = /^\d{2}:\d{2}$/.test(b.dueTime || '') ? b.dueTime : null;
+  const t = await db.one(`INSERT INTO tasks (company_id, title, descr, assignee_id, author_id, priority, created_on, due, due_time, remind_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
+    [me.company_id, title, clean(b.desc, 2000), assignee, me.id, priority, today(), due, dueTime, remind]);
   if (assignee !== me.id) {
     const who = await L.memberName(me.id);
-    await L.notify(assignee, `📌 Новая задача\nот: ${who}\n\n«${title}»\nСрок: ${fmtDue(due)} · Приоритет: ${L.PRIO[priority]}${t.descr ? '\n\n' + t.descr : ''}${remind ? '\n⏰ Напомню ' + remind.replace('T', ' в ') : ''}`, { kind: 'assign', doneTaskId: t.id, path: '/#tasks' });
+    await L.notify(assignee, `📌 Новая задача\nот: ${who}\n\n«${title}»\nСрок: ${fmtDue(due)}${dueTime ? ' до ' + dueTime : ''} · Приоритет: ${L.PRIO[priority]}${t.descr ? '\n\n' + t.descr : ''}${remind ? '\n⏰ Напомню ' + remind.replace('T', ' в ') : ''}`, { kind: 'assign', doneTaskId: t.id, path: '/#tasks' });
   }
   res.json({ id: t.id });
 }));
@@ -247,12 +248,22 @@ app.patch('/api/tasks/:id', auth(), wrap(async (req, res) => {
     const sets = [], vals = [];
     if (b.title !== undefined && clean(b.title, 200)) { vals.push(clean(b.title, 200)); sets.push(`title=$${vals.length}`); }
     if (b.desc !== undefined) { vals.push(clean(b.desc, 2000)); sets.push(`descr=$${vals.length}`); }
-    if (isDate(b.due)) { vals.push(b.due); sets.push(`due=$${vals.length}, before_sent=false`); }
+    if (isDate(b.due)) { vals.push(b.due); sets.push(`due=$${vals.length}, before_sent=false, overdue_sent=false`); }
+    if (b.dueTime !== undefined) { vals.push(/^\d{2}:\d{2}$/.test(b.dueTime || '') ? b.dueTime : null); sets.push(`due_time=$${vals.length}, overdue_sent=false`); }
     if (b.priority && L.PRIO[b.priority]) { vals.push(b.priority); sets.push(`priority=$${vals.length}`); }
     if (b.remind !== undefined) { vals.push(isDT(b.remind) ? b.remind : null); sets.push(`remind_at=$${vals.length}, remind_sent=false`); }
     if (sets.length) { vals.push(t.id); await db.q(`UPDATE tasks SET ${sets.join(', ')} WHERE id=$${vals.length}`, vals); }
   }
   res.json({ ok: true });
+}));
+app.post('/api/tasks/:id/extend', auth(), wrap(async (req, res) => {
+  const t = await visibleTask(req.me, Number(req.params.id));
+  if (!t) return res.status(404).json({ error: 'Задача не найдена' });
+  const b = req.body, opt = L.EXT[b.code] ? L.EXT[b.code] : isDate(b.due) ? { due: b.due, dueTime: /^\d{2}:\d{2}$/.test(b.dueTime || '') ? b.dueTime : null } : null;
+  if (!opt) return res.status(400).json({ error: 'Выберите новый срок' });
+  const r = await L.extendTask(t.id, req.me, opt);
+  if (r.error) return res.status(400).json(r);
+  res.json(r);
 }));
 app.delete('/api/tasks/:id', auth(), wrap(async (req, res) => {
   const t = await visibleTask(req.me, Number(req.params.id));

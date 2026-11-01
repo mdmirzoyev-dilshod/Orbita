@@ -60,7 +60,10 @@ const ROLES = [['worker','Сотрудник'],['manager','Руководите�
 const roleName = u => u.level==='owner' ? 'Владелец' : (ROLES.find(r=>r[0]===u.level)||['',''])[1];
 const roleSelect = (id, sel) => `<select id="${id}">${ROLES.map(([v,l])=>`<option value="${v}" ${v===sel?'selected':''}>${l}</option>`).join('')}</select>`;
 const bossOptions = (except, sel) => S.users.filter(x=>x.role==='manager' && x.id!==except).map(x=>`<option value="${x.id}" ${x.id===sel?'selected':''}>${esc(x.name)}${x.title?' — '+esc(x.title):''}</option>`).join('');
-const late = t => t.status!=='done' && t.due && t.due < TODAY;
+const nowHM = () => { const d = new Date(); return String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0'); };
+const late = t => t.status!=='done' && t.due && (t.due < TODAY || (t.due===TODAY && t.dueTime && nowHM() >= t.dueTime));
+const dueText = t => (t.due===TODAY?'сегодня':fmt(t.due)) + (t.dueTime?' до '+t.dueTime:'');
+const canExtend = t => t.status!=='done' && (t.author===S.me || isOwner() || (isMgr() && t.assignee!==S.me));
 const deptColor = name => { const d = S.depts.find(x=>x.name===name); return d ? d.color : '#9AA3C7'; };
 const AVC = c => c==='#FFD23F' ? '#141729' : c;
 const av = (u,size) => `<span class="av" style="background:${AVC(u.deptColor||deptColor(u.dept))};${size?`width:${size}px;height:${size}px;font-size:${Math.round(size*.38)}px`:''}" aria-hidden="true">${esc((u.name||'?').replace(/^Демо:\s*/,'').slice(0,1))}</span>`;
@@ -349,7 +352,7 @@ function taskRow(t){
   return `<div class="task ${t.status==='done'?'done':''}" data-open="${t.id}">
     ${canTick?`<button class="check ${t.status==='done'?'on':''}" data-tick="${t.id}" aria-label="Отметить выполненной">${ICON.tick}</button>`:'<span></span>'}
     <div style="min-width:0"><div class="t">${esc(t.title)}</div>
-      <div class="meta"><span>${esc(a.name)}</span><span>Срок: ${t.due===TODAY?'сегодня':fmt(t.due)}</span><span class="p-${t.priority}">${PRIO[t.priority]}</span>${t.remind?`<span>⏰ ${fmtDT(t.remind)}</span>`:''}${t.comments.length?`<span>💬 ${t.comments.length}</span>`:''}</div></div>
+      <div class="meta"><span>${esc(a.name)}</span><span${late(t)?' style="color:var(--bad);font-weight:600"':''}>Срок: ${dueText(t)}</span><span class="p-${t.priority}">${PRIO[t.priority]}</span>${t.remind?`<span>⏰ ${fmtDT(t.remind)}</span>`:''}${t.comments.length?`<span>💬 ${t.comments.length}</span>`:''}</div></div>
     <div class="right">${statusChip(t)}</div></div>`;
 }
 function filtered(){ return S.tasks.filter(t => (S.scope.includes(t.assignee) || t.author===S.me) && (F.who==='all' || t.assignee===Number(F.who)) && (!F.q || (t.title+' '+U(t.assignee).name).toLowerCase().includes(F.q.toLowerCase()))); }
@@ -621,7 +624,8 @@ function openNew(forUser){
     <div class="frow"><div class="field"><label for="n-who">Исполнитель</label><select id="n-who" required>${mgr&&!forUser?'<option value="" disabled selected>Выберите</option>':''}${opts}</select></div>
     <div class="field"><label for="n-prio">Приоритет</label><select id="n-prio"><option value="high">Высокий</option><option value="medium" selected>Средний</option><option value="low">Низкий</option></select></div></div>
     <div class="frow"><div class="field"><label for="n-due">Срок</label><input type="date" id="n-due" value="${addDays(TODAY,1)}" required></div>
-    <div class="field"><label for="n-rem">Напомнить в Telegram</label><input type="datetime-local" id="n-rem"></div></div>
+    <div class="field"><label for="n-due-time">До какого времени</label><input type="time" id="n-due-time"><small class="note">Пусто — до конца дня</small></div></div>
+    <div class="field"><label for="n-rem">Напомнить в Telegram</label><input type="datetime-local" id="n-rem"></div>
     <div class="mact"><button type="button" class="btn" data-close="1">Отмена</button><button class="btn primary" type="submit">${mgr?'Поставить и уведомить':'Добавить'}</button></div>
   </form>`);
   setTimeout(()=>$('n-title').focus(),30);
@@ -632,7 +636,10 @@ function openTask(id){
   modal(`<div class="modal" role="dialog" aria-label="Задача">
     <div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start"><h2 style="margin:0 0 6px">${esc(t.title)}</h2>${statusChip(t)}</div>
     ${t.desc?`<p style="margin:0 0 12px;color:var(--muted);white-space:pre-line">${esc(t.desc)}</p>`:''}
-    <dl class="dl"><dt>Исполнитель</dt><dd>${esc(a.name)}${a.title?' · '+esc(a.title):''}</dd><dt>Поставил</dt><dd>${esc(au.name)}</dd><dt>Срок</dt><dd>${fmt(t.due)}</dd><dt>Приоритет</dt><dd class="p-${t.priority}">${PRIO[t.priority]}</dd><dt>Напоминание</dt><dd>${t.remind?fmtDT(t.remind):'нет'}</dd></dl>
+    <dl class="dl"><dt>Исполнитель</dt><dd>${esc(a.name)}${a.title?' · '+esc(a.title):''}</dd><dt>Поставил</dt><dd>${esc(au.name)}</dd><dt>Срок</dt><dd${late(t)?' style="color:var(--bad);font-weight:700"':''}>${dueText(t)}${t.ext?` <span class="note">· продлевали ${t.ext} раз</span>`:''}</dd><dt>Приоритет</dt><dd class="p-${t.priority}">${PRIO[t.priority]}</dd><dt>Напоминание</dt><dd>${t.remind?fmtDT(t.remind):'нет'}</dd></dl>
+    ${canExtend(t)?`<div class="extbox ${late(t)?'late':''}"><div class="field" style="margin:0 0 8px"><label>${late(t)?'Срок истёк — добавить время':'Продлить срок'}</label></div>
+      <div class="extrow">${[['2h','+2 часа'],['1d','+1 день'],['3d','+3 дня'],['7d','+неделя']].map(([c,l])=>`<button type="button" class="btn sm" data-ext="${t.id}|${c}">${l}</button>`).join('')}</div>
+      <form class="extrow" id="ext-form" data-id="${t.id}" style="margin-top:8px"><input type="date" id="ext-due" value="${t.due>=TODAY?addDays(t.due,1):addDays(TODAY,1)}" min="${TODAY}" aria-label="Новая дата"><input type="time" id="ext-time" value="${t.dueTime||''}" aria-label="Время (необязательно)"><button class="btn sm primary" type="submit">Назначить срок</button></form></div>`:''}
     ${canStatus?`<div class="field"><label>Статус</label></div><div class="stat-row">${Object.keys(STATUS).map(s=>`<button type="button" class="${t.status===s?'sel':''}" data-status="${t.id}|${s}">${STATUS[s]}</button>`).join('')}</div>`:''}
     <div class="field"><label>Комментарии</label></div>
     ${t.comments.map(c=>`<div class="cm"><b>${esc(U(c.u).name)}</b><time>${fmtDT(c.at)}</time><div>${esc(c.t)}</div></div>`).join('') || '<div class="note" style="margin-bottom:8px">Пока нет комментариев</div>'}
@@ -765,9 +772,10 @@ async function boot(){
 
 /* ---------- события ---------- */
 document.addEventListener('click', e => {
-  const el = e.target.closest('[data-wk],[data-wcat],[data-wedit],[data-wdel],[data-bud],[data-act],[data-open],[data-tick],[data-plan],[data-pdel],[data-pedit],[data-hedit],[data-hdel],[data-hab],[data-status],[data-close],[data-delete],[data-sw],[data-cf],[data-view],[data-mode]');
+  const el = e.target.closest('[data-ext],[data-wk],[data-wcat],[data-wedit],[data-wdel],[data-bud],[data-act],[data-open],[data-tick],[data-plan],[data-pdel],[data-pedit],[data-hedit],[data-hdel],[data-hab],[data-status],[data-close],[data-delete],[data-sw],[data-cf],[data-view],[data-mode]');
   if(!el) return;
   if(el.dataset.close && e.target !== el && !e.target.closest('button[data-close]')) return;
+  if(el.dataset.ext){ const [id,code] = el.dataset.ext.split('|'); return (async()=>{ try { const r = await api('POST','/api/tasks/'+id+'/extend',{code}); await reload(); render(); openTask(Number(id)); toast('Срок продлён до '+r.label+' — исполнитель получит уведомление'); } catch(err){ toast(err.message); } })(); }
   if(el.dataset.wk){ WK = el.dataset.wk; WCAT=''; const a=$('w-amount')?.value, n=$('w-note')?.value; render(); if($('w-amount')){ $('w-amount').value=a||''; $('w-note').value=n||''; } return; }
   if(el.dataset.wcat){ WCAT = WCAT===el.dataset.wcat ? '' : el.dataset.wcat; document.querySelectorAll('.wcat').forEach(b=>b.classList.toggle('on', b.dataset.wcat===WCAT)); return; }
   if(el.dataset.wedit) return openWalletEdit(Number(el.dataset.wedit));
@@ -823,10 +831,11 @@ document.addEventListener('submit', async e => {
     if(f.id==='new-task'){
       const title = $('n-title').value.trim(), who = $('n-who').value;
       if(!title || !who) return toast('Заполните задачу и исполнителя');
-      await api('POST','/api/tasks',{title, desc:$('n-desc').value, assignee:Number(who), priority:$('n-prio').value, due:$('n-due').value, remind:$('n-rem').value||null});
+      await api('POST','/api/tasks',{title, desc:$('n-desc').value, assignee:Number(who), priority:$('n-prio').value, due:$('n-due').value, dueTime:$('n-due-time').value||null, remind:$('n-rem').value||null});
       closeModal(); await reload(); render(); return toast(Number(who)!==S.me ? `Задача поставлена — ${U(Number(who)).name} получит уведомление` : 'Задача добавлена');
     }
     if(f.id==='add-plan'){ const v=$('plan-text').value.trim(); if(!v) return; await api('POST','/api/plans',{day:DAY,text:v}); await reload(); render(); $('plan-text')?.focus(); return; }
+    if(f.id==='ext-form'){ const id=Number(f.dataset.id); const r = await api('POST','/api/tasks/'+id+'/extend',{due:$('ext-due').value, dueTime:$('ext-time').value||null}); await reload(); render(); openTask(id); return toast('Срок продлён до '+r.label); }
     if(f.id==='wallet-form'){
       const amount = Number($('w-amount').value.replace(/[^\d]/g,''));
       if(!amount) return toast('Введите сумму');
