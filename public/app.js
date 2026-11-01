@@ -198,12 +198,19 @@ function renderNav(){
     <div style="display:flex;justify-content:space-between;gap:8px"><button class="linkbtn" data-act="profile">Изменить имя</button><button class="linkbtn" data-act="logout">Выйти</button></div>`;
 }
 let F = {who:'all', q:'', mode:'timeline', off:0};
+const SUN = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4.2"/><path d="M12 2.5v2.2M12 19.3v2.2M4.6 4.6l1.6 1.6M17.8 17.8l1.6 1.6M2.5 12h2.2M19.3 12h2.2M4.6 19.4l1.6-1.6M17.8 6.2l1.6-1.6"/></svg>';
+const MOON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.5 14.5A8.5 8.5 0 019.5 3.5a8.5 8.5 0 1011 11z"/></svg>';
+function themeToggle(){
+  const dark = document.documentElement.dataset.theme !== 'light';
+  return `<div class="daynight" role="group" aria-label="Оформление"><button type="button" class="${dark?'':'on'}" data-theme-set="light" aria-pressed="${!dark}" title="Дневной режим">${SUN}<span>День</span></button><button type="button" class="${dark?'on':''}" data-theme-set="dark" aria-pressed="${dark}" title="Ночной режим">${MOON}<span>Ночь</span></button></div>`;
+}
 function header(crumb, title, action){
   const d = new Date(TODAY+'T12:00:00');
   return `<div class="head"><div><div class="crumbs">${esc(S.company.name)}<span>›</span>${crumb}</div><h1>${title}</h1></div>
     <div class="tools">
       <label class="search">${ICON.search}<input id="gsearch" placeholder="Поиск задач, людей…" aria-label="Поиск" value="${esc(F.q)}"><kbd>⌘K</kbd></label>
       <span class="datechip"><i></i>${WD[d.getDay()]}, ${d.getDate()} ${MON[d.getMonth()]}<span>· Неделя ${week(TODAY)}</span></span>
+      ${themeToggle()}
       <a class="iconbtn" href="#alerts" aria-label="Уведомления">${ICON.bell}${myUnread()?'<i class="dot"></i>':''}</a>
       ${action||''}
     </div></div>`;
