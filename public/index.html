@@ -275,6 +275,11 @@ button{cursor:pointer}
 .habits th.today{color:var(--blue)}
 .hb{width:28px;height:28px;border-radius:8px;border:0;background:var(--blue-soft);padding:0;display:inline-grid;place-items:center}
 .hb.on{background:var(--blue)}
+.hb.off{background:transparent;color:#C5C9DA;cursor:default;font-weight:700}
+.h-name{cursor:pointer;border-radius:8px;padding:2px 4px;display:flex;flex-direction:column;min-width:130px}
+.h-name:hover{background:var(--soft)}
+.h-name small{font-size:11px;color:var(--muted);font-weight:500;line-height:1.35}
+.h-streak{color:#D9861A!important;font-weight:700!important}
 .hb svg{width:12px;height:12px;color:#fff;opacity:0}
 .hb.on svg{opacity:1}
 
@@ -355,9 +360,9 @@ button{cursor:pointer}
   .task{grid-template-columns:auto minmax(0,1fr)}
   .task .right{grid-column:2}
   .frow{grid-template-columns:1fr}
-  #add-plan{flex-wrap:wrap}
-  #add-plan input{flex-basis:100%}
-  #add-plan .btn{flex:1;justify-content:center}
+  #add-plan,#add-habit{flex-wrap:wrap}
+  #add-plan input,#add-habit input{flex-basis:100%}
+  #add-plan .btn,#add-habit .btn{flex:1;justify-content:center}
   .tbl .hide-s{display:none}
   .toast{bottom:calc(78px + env(safe-area-inset-bottom,0px))}
   .ov-grid .live{min-height:420px}

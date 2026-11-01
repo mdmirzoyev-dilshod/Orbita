@@ -177,7 +177,7 @@ app.get('/api/state', auth(), wrap(async (req, res) => {
   const comments = tasks.length ? await db.all(`SELECT * FROM comments WHERE task_id = ANY($1) ORDER BY id`, [tasks.map(t => t.id)]) : [];
   const plans = await db.all(`SELECT * FROM plan_items WHERE member_id = ANY($1) AND day BETWEEN $2 AND $3 ORDER BY time NULLS LAST, id`, [scope, addDays(t0, -21), addDays(t0, 60)]);
   const habits = await db.all(`SELECT * FROM habits WHERE member_id=$1 ORDER BY id`, [me.id]);
-  const marks = habits.length ? await db.all(`SELECT * FROM habit_marks WHERE habit_id = ANY($1) AND day >= $2`, [habits.map(h => h.id), addDays(t0, -30)]) : [];
+  const marks = habits.length ? await db.all(`SELECT * FROM habit_marks WHERE habit_id = ANY($1) AND day >= $2`, [habits.map(h => h.id), addDays(t0, -60)]) : [];
   const notifs = await db.all(`SELECT * FROM notifs WHERE member_id=$1 ORDER BY id DESC LIMIT 100`, [me.id]);
   const depts = await db.all(`SELECT * FROM depts WHERE company_id=$1 ORDER BY id`, [me.company_id]);
 
@@ -200,7 +200,7 @@ app.get('/api/state', auth(), wrap(async (req, res) => {
     tasks: tasks.map(t => ({ id: t.id, title: t.title, desc: t.descr, assignee: t.assignee_id, author: t.author_id, priority: t.priority, status: t.status, created: t.created_on, due: t.due, remind: t.remind_at, doneAt: t.done_on,
       comments: comments.filter(c => c.task_id === t.id).map(c => ({ u: c.member_id, t: c.text, at: c.at })) })),
     plans: P,
-    habits: habits.map(h => ({ id: h.id, name: h.name, days: Object.fromEntries(marks.filter(m => m.habit_id === h.id).map(m => [m.day, true])) })),
+    habits: habits.map(h => ({ id: h.id, name: h.name, note: h.note, wdays: h.wdays, start: h.start_on, until: h.until, time: h.time, remind: h.remind, days: Object.fromEntries(marks.filter(m => m.habit_id === h.id).map(m => [m.day, true])) })),
     notifs: notifs.map(n => ({ id: n.id, to: me.id, text: n.text, at: n.at, read: n.read })),
     settings: { [me.id]: me.settings },
     bot: tg.botUsername(),
@@ -337,10 +337,36 @@ app.delete('/api/plans/:id', auth(), wrap(async (req, res) => {
   await db.q(`DELETE FROM plan_items WHERE id=$1`, [p.id]);
   res.json({ ok: true, count: 1 });
 }));
+// Привычка: расписание по дням недели, период, время напоминания, цель/заметка
+function habitFields(b, prev = {}) {
+  const wd = Array.isArray(b.wdays) ? [...new Set(b.wdays.map(Number).filter(n => n >= 0 && n <= 6))].sort().join('') : (prev.wdays || '0123456');
+  const f = {
+    name: clean(b.name !== undefined ? b.name : prev.name, 60),
+    note: clean(b.note !== undefined ? b.note : prev.note, 500),
+    wdays: wd || '0123456',
+    start: isDate(b.start) ? b.start : (prev.start_on || today()),
+    until: b.until === null || b.until === '' ? null : (isDate(b.until) ? b.until : (prev.until || null)),
+    time: b.time === null || b.time === '' ? null : (isTime(b.time) ? b.time : (prev.time || null)),
+  };
+  f.remind = Boolean(b.remind !== undefined ? b.remind : prev.remind) && Boolean(f.time);
+  return f;
+}
 app.post('/api/habits', auth(), wrap(async (req, res) => {
-  const name = clean(req.body.name, 60);
-  if (!name) return res.status(400).json({ error: 'Напишите название привычки' });
-  await db.q(`INSERT INTO habits (member_id, name) VALUES ($1,$2)`, [req.me.id, name]);
+  const f = habitFields(req.body);
+  if (!f.name) return res.status(400).json({ error: 'Напишите название привычки' });
+  if (f.until && f.until < f.start) return res.status(400).json({ error: 'Дата окончания раньше даты начала' });
+  await db.q(`INSERT INTO habits (member_id, name, note, wdays, start_on, until, time, remind) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+    [req.me.id, f.name, f.note, f.wdays, f.start, f.until, f.time, f.remind]);
+  res.json({ ok: true });
+}));
+app.patch('/api/habits/:id', auth(), wrap(async (req, res) => {
+  const h = await db.one(`SELECT * FROM habits WHERE id=$1 AND member_id=$2`, [Number(req.params.id), req.me.id]);
+  if (!h) return res.status(404).json({ error: 'Привычка не найдена' });
+  const f = habitFields(req.body, h);
+  if (!f.name) return res.status(400).json({ error: 'Название не может быть пустым' });
+  if (f.until && f.until < f.start) return res.status(400).json({ error: 'Дата окончания раньше даты начала' });
+  await db.q(`UPDATE habits SET name=$1, note=$2, wdays=$3, start_on=$4, until=$5, time=$6, remind=$7, last_reminded = CASE WHEN $6 IS DISTINCT FROM time THEN NULL ELSE last_reminded END WHERE id=$8`,
+    [f.name, f.note, f.wdays, f.start, f.until, f.time, f.remind, h.id]);
   res.json({ ok: true });
 }));
 app.post('/api/habits/:id/toggle', auth(), wrap(async (req, res) => {

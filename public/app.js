@@ -428,7 +428,8 @@ function vPlans(){
   const days = Array.from({length:7},(_,i)=>addDays(TODAY,i-6));
   const hs = S.habits;
   const dlabel = DAY===TODAY ? 'Сегодня' : DAY===addDays(TODAY,1) ? 'Завтра' : DAY===addDays(TODAY,-1) ? 'Вчера' : fmt(DAY);
-  const streak = hs.length ? Math.round(hs.reduce((a,h)=>a+days.filter(d=>h.days[d]).length,0)/(hs.length*7)*100) : 0;
+  const cells = hs.reduce((a,h)=>a+days.filter(d=>hScheduled(h,d)).length,0);
+  const streak = cells ? Math.round(hs.reduce((a,h)=>a+days.filter(d=>hScheduled(h,d)&&h.days[d]).length,0)/cells*100) : 0;
   return header('Планы', 'Мои планы') + `
   <div class="grid plans">
     <div class="card">
@@ -443,9 +444,11 @@ function vPlans(){
     </div>
     <div class="card">
       <div class="card-h"><div><h3>Привычки</h3><p>Последние 7 дней</p></div><span class="pill blue num">${streak}% недели</span></div>
-      <div class="scroll"><table class="habits"><thead><tr><th>Привычка</th>${days.map(d=>{const x=new Date(d+'T12:00:00');return `<th class="${d===TODAY?'today':''}">${WD[x.getDay()]}<br><span class="num">${x.getDate()}</span></th>`}).join('')}<th></th></tr></thead>
-      <tbody>${hs.map(h=>`<tr><td>${esc(h.name)}</td>${days.map(d=>`<td><button class="hb ${h.days[d]?'on':''}" data-hab="${h.id}|${d}" aria-label="${esc(h.name)} ${d}">${ICON.tick}</button></td>`).join('')}<td><button class="del" style="opacity:.5" data-hdel="${h.id}" aria-label="Удалить привычку">✕</button></td></tr>`).join('') || `<tr><td colspan="9" class="empty">Привычек пока нет. Например: «Чтение 20 минут» или «Спорт».</td></tr>`}</tbody></table></div>
-      <form class="add" id="add-habit"><input id="habit-text" placeholder="Новая привычка" aria-label="Новая привычка" autocomplete="off"><button class="btn" type="submit">Добавить</button></form>
+      <div class="scroll"><table class="habits"><thead><tr><th>Привычка</th>${days.map(d=>{const x=new Date(d+'T12:00:00');return `<th class="${d===TODAY?'today':''}">${WD[x.getDay()]}<br><span class="num">${x.getDate()}</span></th>`}).join('')}</tr></thead>
+      <tbody>${hs.map(h=>{ const st=hStreak(h); return `<tr><td><div class="h-name" data-hedit="${h.id}" role="button" tabindex="0" title="Открыть и изменить"><b>${esc(h.name)}</b>
+        <small>${esc(hSchedText(h))}${h.time?` · ${h.remind?'🔔 ':''}${esc(h.time)}`:''}${h.note?` · 🎯 ${esc(h.note)}`:''}${h.until?` · до ${fmt(h.until)}`:''}</small>${st>1?`<small class="h-streak">🔥 ${st} подряд</small>`:''}</div></td>
+        ${days.map(d=>hScheduled(h,d)?`<td><button class="hb ${h.days[d]?'on':''}" data-hab="${h.id}|${d}" aria-label="${esc(h.name)} ${d}">${ICON.tick}</button></td>`:`<td><span class="hb off" title="Не по расписанию">·</span></td>`).join('')}</tr>`; }).join('') || `<tr><td colspan="8" class="empty">Привычек пока нет. Например: «Чтение 20 минут» или «Спорт».</td></tr>`}</tbody></table></div>
+      <form class="add" id="add-habit"><input id="habit-text" placeholder="Новая привычка" aria-label="Новая привычка" autocomplete="off"><button class="btn" type="button" data-act="habit-more" title="Расписание, время, срок, цель">Подробнее…</button><button class="btn primary" type="submit">Добавить</button></form>
     </div>
   </div>`;
 }
@@ -526,6 +529,29 @@ function openTask(id){
 const REPEAT = [['','Не повторять'],['daily','Каждый день'],['weekdays','По будням (Пн–Пт)'],['weekly','Раз в неделю'],['days','По выбранным дням']];
 const REPEAT_SHORT = {daily:'каждый день', weekdays:'по будням', weekly:'раз в неделю', days:'по дням недели'};
 const WD_ORDER = [1,2,3,4,5,6,0];
+const hScheduled = (h,d) => { if(h.start && d < h.start) return false; if(h.until && d > h.until) return false; return (h.wdays||'0123456').includes(String(new Date(d+'T12:00:00').getDay())); };
+const hSchedText = h => { const w = h.wdays||'0123456'; return w==='0123456'?'каждый день': w==='12345'?'по будням': WD_ORDER.filter(d=>w.includes(String(d))).map(d=>WD[d]).join(', '); };
+function hStreak(h){ let n=0, d=TODAY; if(!h.days[d]) d=addDays(d,-1); for(let i=0;i<120;i++){ if(hScheduled(h,d)){ if(h.days[d]) n++; else break; } d=addDays(d,-1); if(h.start && d<h.start) break; } return n; }
+function openHabit(id, name){
+  const h = id ? S.habits.find(x=>x.id===id) : {name:name||'', wdays:'0123456', start:TODAY, until:null, time:null, remind:false, note:''};
+  if(!h) return;
+  const w = h.wdays||'0123456', mode = w==='0123456'?'daily':w==='12345'?'weekdays':'days';
+  modal(`<form class="modal" id="habit-form" data-id="${id||''}" role="dialog" aria-label="Привычка">
+    <h2>${id?'Привычка':'Новая привычка'}</h2>
+    <div class="field"><label for="hf-name">Название</label><input id="hf-name" required value="${esc(h.name)}" placeholder="Например: чтение, спорт, ранний подъём" autocomplete="off"></div>
+    <div class="field"><label for="hf-note">Цель или заметка</label><input id="hf-note" value="${esc(h.note||'')}" placeholder="Например: 20 минут, 10 страниц, 5 км" autocomplete="off"></div>
+    <div class="frow"><div class="field"><label for="hf-mode">Расписание</label><select id="hf-mode"><option value="daily" ${mode==='daily'?'selected':''}>Каждый день</option><option value="weekdays" ${mode==='weekdays'?'selected':''}>По будням (Пн–Пт)</option><option value="days" ${mode==='days'?'selected':''}>По выбранным дням</option></select></div>
+    <div class="field"><label for="hf-time">Время (необязательно)</label><input type="time" id="hf-time" value="${esc(h.time||'')}"></div></div>
+    <div class="field" id="hf-days-f" ${mode==='days'?'':'hidden'}><label>Дни недели</label><div class="wdchips">${WD_ORDER.map(d=>`<label class="wdc"><input type="checkbox" name="hf-wd" value="${d}" ${w.includes(String(d))?'checked':''}><span>${WD[d]}</span></label>`).join('')}</div></div>
+    <div class="frow"><div class="field"><label for="hf-start">Начать с</label><input type="date" id="hf-start" value="${esc(h.start||TODAY)}"></div>
+    <div class="field"><label for="hf-until">До какого числа</label><input type="date" id="hf-until" value="${esc(h.until||'')}"><small class="note">Пусто — без срока</small></div></div>
+    <div class="opts"><label class="opt"><input type="checkbox" id="hf-remind" ${h.remind?'checked':''} ${h.time?'':'disabled'}><span>🔔 Напомнить в Telegram, если ещё не отмечено</span></label></div>
+    <p class="note" id="hf-hint">${h.time?'':'Чтобы получать напоминание, укажите время.'}</p>
+    <div class="mact" style="justify-content:space-between"><span>${id?`<button type="button" class="btn" data-hdel="${id}" style="color:var(--bad)">Удалить привычку</button>`:''}</span>
+      <span style="display:flex;gap:6px"><button type="button" class="btn" data-close="1">Отмена</button><button class="btn primary" type="submit">${id?'Сохранить':'Добавить привычку'}</button></span></div>
+  </form>`);
+  setTimeout(()=>$('hf-name').focus(),30);
+}
 function openPlanNew(text){
   const wd = new Date((DAY||TODAY)+'T12:00:00').getDay();
   modal(`<form class="modal" id="plan-form" role="dialog" aria-label="Новый пункт плана">
@@ -624,7 +650,7 @@ async function boot(){
 
 /* ---------- события ---------- */
 document.addEventListener('click', e => {
-  const el = e.target.closest('[data-act],[data-open],[data-tick],[data-plan],[data-pdel],[data-pedit],[data-hdel],[data-hab],[data-status],[data-close],[data-delete],[data-sw],[data-cf],[data-view],[data-mode]');
+  const el = e.target.closest('[data-act],[data-open],[data-tick],[data-plan],[data-pdel],[data-pedit],[data-hedit],[data-hdel],[data-hab],[data-status],[data-close],[data-delete],[data-sw],[data-cf],[data-view],[data-mode]');
   if(!el) return;
   if(el.dataset.close && e.target !== el && !e.target.closest('button[data-close]')) return;
   if(el.dataset.tick){ e.stopPropagation(); const t=S.tasks.find(x=>x.id===Number(el.dataset.tick)); const ns = t.status==='done'?'progress':'done';
@@ -639,12 +665,14 @@ document.addEventListener('click', e => {
   if(el.dataset.pedit) return openPlanEdit(Number(el.dataset.pedit));
   if(el.dataset.plan) return act(()=>api('PATCH','/api/plans/'+el.dataset.plan,{done: el.dataset.done!=='1'}));
   if(el.dataset.pdel){ const ser = el.dataset.series==='1'; if(el.closest('.modal') && el.dataset.confirm!=='1'){ el.dataset.confirm='1'; el.textContent = ser?'Удалить все следующие?':'Точно удалить?'; return; } closeModal(); return act(()=>api('DELETE','/api/plans/'+el.dataset.pdel+(ser?'?series=1':'')), ser?'Серия удалена с этого дня':'Пункт удалён'); }
-  if(el.dataset.hdel){ if(el.dataset.confirm!=='1'){ el.dataset.confirm='1'; el.style.opacity=1; el.style.color='var(--bad)'; el.textContent='Удалить?'; return; } return act(()=>api('DELETE','/api/habits/'+el.dataset.hdel),'Привычка удалена'); }
+  if(el.dataset.hedit) return openHabit(Number(el.dataset.hedit));
+  if(el.dataset.hdel){ if(el.dataset.confirm!=='1'){ el.dataset.confirm='1'; el.textContent='Точно удалить? Отметки тоже удалятся'; return; } closeModal(); return act(()=>api('DELETE','/api/habits/'+el.dataset.hdel),'Привычка удалена'); }
   if(el.dataset.hab){ const [hid,d]=el.dataset.hab.split('|'); return act(()=>api('POST','/api/habits/'+hid+'/toggle',{day:d})); }
   if(el.dataset.sw){ const k=el.dataset.sw; const cur = mySettings()[k]!==false; return act(()=>api('PATCH','/api/settings',{[k]:!cur}),'Настройка сохранена'); }
   const a = el.dataset.act;
   if(a==='new') return openNew(el.dataset.for);
   if(a==='invite') return openInvite();
+  if(a==='habit-more') return openHabit(null, $('habit-text') ? $('habit-text').value.trim() : '');
   if(a==='plan-more') return openPlanNew($('plan-text') ? $('plan-text').value.trim() : '');
   if(a==='editm') return openEditMember(Number(el.dataset.id));
   if(a==='profile') return openProfile();
@@ -683,6 +711,13 @@ document.addEventListener('submit', async e => {
       const body = {text:$('pe-text').value, day:$('pe-day').value, time:$('pe-time').value||null, note:$('pe-note').value, remind:$('pe-remind').checked, important:$('pe-imp').checked, scope: sc?sc.value:'one'};
       await api('PATCH','/api/plans/'+f.dataset.id, body); closeModal(); await reload(); render(); return toast(body.scope==='series'?'Изменено для всех следующих дней':'Сохранено');
     }
+    if(f.id==='habit-form'){
+      const mode = $('hf-mode').value, wdays = mode==='daily'?[0,1,2,3,4,5,6]: mode==='weekdays'?[1,2,3,4,5]: [...document.querySelectorAll('input[name=hf-wd]:checked')].map(x=>Number(x.value));
+      if(!wdays.length) return toast('Выберите хотя бы один день недели');
+      const body = {name:$('hf-name').value, note:$('hf-note').value, wdays, start:$('hf-start').value, until:$('hf-until').value||null, time:$('hf-time').value||null, remind:$('hf-remind').checked};
+      if(f.dataset.id) await api('PATCH','/api/habits/'+f.dataset.id, body); else await api('POST','/api/habits', body);
+      closeModal(); await reload(); render(); return toast(f.dataset.id?'Привычка сохранена':'Привычка добавлена');
+    }
     if(f.id==='add-habit'){ const v=$('habit-text').value.trim(); if(!v) return; await api('POST','/api/habits',{name:v}); await reload(); return render(); }
     if(f.id==='add-cm'){ const v=$('cm-text').value.trim(); if(!v) return; await api('POST','/api/tasks/'+f.dataset.id+'/comments',{text:v}); await reload(); render(); openTask(Number(f.dataset.id)); return toast('Комментарий отправлен'); }
     if(f.id==='invite-form'){
@@ -709,6 +744,8 @@ document.addEventListener('change', e => {
   if(id==='i-dept') $('i-newdept-f').hidden = e.target.value!=='new';
   if(id==='e-dept') $('e-newdept-f').hidden = e.target.value!=='new';
   if(['pf-repeat','pf-time','pf-day','pf-until'].includes(id)) planHint();
+  if(id==='hf-mode') $('hf-days-f').hidden = e.target.value!=='days';
+  if(id==='hf-time'){ $('hf-remind').disabled = !e.target.value; if(!e.target.value) $('hf-remind').checked=false; else $('hf-remind').checked=true; $('hf-hint').textContent = e.target.value?'':'Чтобы получать напоминание, укажите время.'; }
   if(id==='pe-time'){ $('pe-remind').disabled = !e.target.value; if(!e.target.value) $('pe-remind').checked=false; }
   if(id==='i-role'){ const f = e.target.value==='founder'; $('i-boss-f').hidden = f; $('i-founder-note').hidden = !f; }
   if(id==='e-role') $('e-boss-f').hidden = e.target.value==='founder';
@@ -718,6 +755,7 @@ document.addEventListener('change', e => {
 document.addEventListener('keydown', e => {
   if(e.key==='Escape') closeModal();
   if(e.key==='Enter' && e.target.dataset && e.target.dataset.pedit){ openPlanEdit(Number(e.target.dataset.pedit)); }
+  if(e.key==='Enter' && e.target.dataset && e.target.dataset.hedit){ openHabit(Number(e.target.dataset.hedit)); }
   if((e.metaKey||e.ctrlKey) && e.key.toLowerCase()==='k'){ e.preventDefault(); $('gsearch')?.focus(); }
   if(e.key==='Enter' && e.target.id==='gsearch'){ F.q = e.target.value.trim(); if(current()!=='team' && current()!=='tasks') location.hash='tasks'; render(); }
 });

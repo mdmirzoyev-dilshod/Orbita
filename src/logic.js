@@ -93,7 +93,9 @@ async function morningDigest(member) {
 async function eveningDigest(member) {
   const t0 = today();
   const plan = await db.all(`SELECT * FROM plan_items WHERE member_id=$1 AND day=$2 ORDER BY time NULLS LAST, id`, [member.id, t0]);
-  const habits = await db.all(`SELECT h.name, EXISTS(SELECT 1 FROM habit_marks hm WHERE hm.habit_id=h.id AND hm.day=$2) AS done FROM habits h WHERE h.member_id=$1`, [member.id, t0]);
+  const wd = String(new Date(t0 + 'T12:00:00Z').getUTCDay());
+  const habits = (await db.all(`SELECT h.name, h.wdays, EXISTS(SELECT 1 FROM habit_marks hm WHERE hm.habit_id=h.id AND hm.day=$2) AS done FROM habits h
+     WHERE h.member_id=$1 AND (h.start_on IS NULL OR h.start_on <= $2) AND (h.until IS NULL OR h.until >= $2)`, [member.id, t0])).filter(h => (h.wdays || '0123456').includes(wd));
   if (!plan.length && !habits.length) return;
   let text = '🌙 Итоги дня';
   if (plan.length) {
@@ -127,6 +129,16 @@ async function tick() {
   for (const p of pl) {
     await db.q(`UPDATE plan_items SET reminded=true WHERE id=$1`, [p.id]);
     await notify(p.member_id, `🗓 ${p.time} — ${p.important ? '⭐ ' : ''}${p.text}${p.note ? '\n\n📝 ' + p.note : ''}`, { kind: 'remind', path: '/#plans' });
+  }
+  // напоминания по привычкам (в дни расписания, если ещё не отмечена)
+  const wdNow = String(new Date(`${date}T12:00:00Z`).getUTCDay());
+  const hs = await db.all(`SELECT h.* FROM habits h WHERE h.remind AND h.time IS NOT NULL AND h.time <= $2 AND (h.last_reminded IS NULL OR h.last_reminded < $1)
+     AND (h.start_on IS NULL OR h.start_on <= $1) AND (h.until IS NULL OR h.until >= $1)
+     AND NOT EXISTS (SELECT 1 FROM habit_marks hm WHERE hm.habit_id=h.id AND hm.day=$1)`, [date, time]);
+  for (const h of hs) {
+    if (!(h.wdays || '0123456').includes(wdNow)) continue;
+    await db.q(`UPDATE habits SET last_reminded=$1 WHERE id=$2`, [date, h.id]);
+    await notify(h.member_id, `💪 Привычка: ${h.name}${h.note ? '\n🎯 ' + h.note : ''}\n\nНе забудьте отметить в «Моих планах».`, { kind: 'remind', path: '/#plans' });
   }
   // напоминания, указанные в задаче
   const due = await db.all(`SELECT * FROM tasks WHERE remind_at IS NOT NULL AND NOT remind_sent AND status <> 'done' AND remind_at <= $1`, [now]);
