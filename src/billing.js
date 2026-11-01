@@ -114,4 +114,31 @@ async function trialReminders(tg) {
   }
 }
 
-module.exports = { UNIT_UZS, PRICE, LIMITS, TRIAL_DAYS, PACK_MIN, uzs, companyInfo, hasFeature, aiAccess, aiGate, addUsage, isPlatformAdmin, trialReminders };
+// продлить оплаченный период: компания или ИИ человека; пакет +60 мин
+const extendDate = (cur, months) => { const base = cur && cur >= today() ? cur : today(); const d = new Date(base + 'T12:00:00Z'); d.setUTCMonth(d.getUTCMonth() + months); return d.toISOString().slice(0, 10); };
+async function applyPayment({ kind, companyId, userId, months = 1, amount = 0, byUser = null, note = '' }, tg) {
+  let until = null;
+  if (kind === 'company') {
+    const co = await db.one(`SELECT paid_until FROM companies WHERE id=$1`, [companyId]);
+    until = extendDate(co && co.paid_until, months);
+    await db.q(`UPDATE companies SET paid_until=$1 WHERE id=$2`, [until, companyId]);
+  } else if (kind === 'ai') {
+    const u = await db.one(`SELECT ai_paid_until FROM users WHERE id=$1`, [userId]);
+    until = extendDate(u && u.ai_paid_until, months);
+    await db.q(`UPDATE users SET ai_paid_until=$1 WHERE id=$2`, [until, userId]);
+  } else if (kind === 'pack') {
+    await db.q(`INSERT INTO ai_usage (user_id, month, extra_min) VALUES ($1,$2,$3) ON CONFLICT (user_id, month) DO UPDATE SET extra_min = ai_usage.extra_min + EXCLUDED.extra_min`, [userId, month(), PACK_MIN * Math.max(1, months)]);
+  }
+  await db.q(`INSERT INTO payments (kind, company_id, user_id, months, amount, note, by_user) VALUES ($1,$2,$3,$4,$5,$6,$7)`, [kind, companyId || null, userId || null, kind === 'pack' ? 0 : months, amount, note, byUser]);
+  // сообщение в Telegram
+  if (tg) {
+    const to = kind === 'company'
+      ? await db.all(`SELECT u.tg_id FROM members m JOIN users u ON u.id=m.user_id WHERE m.company_id=$1 AND m.active AND m.role IN ('owner','founder','director') AND u.tg_id > 0`, [companyId])
+      : await db.all(`SELECT tg_id FROM users WHERE id=$1 AND tg_id > 0`, [userId]);
+    const text = kind === 'company' ? `✅ Оплата получена: тариф компании продлён до ${until}. Спасибо!` : kind === 'ai' ? `✅ ИИ-помощник оплачен до ${until}. Спасибо!\n\nГолосовые и свободный текст работают.` : `✅ Добавлено +${PACK_MIN * Math.max(1, months)} минут голосовых на этот месяц.`;
+    for (const r of to) await tg.send(r.tg_id, text, { open: false }).catch(() => {});
+  }
+  return { until };
+}
+
+module.exports = { extendDate, applyPayment, UNIT_UZS, PRICE, LIMITS, TRIAL_DAYS, PACK_MIN, uzs, companyInfo, hasFeature, aiAccess, aiGate, addUsage, isPlatformAdmin, trialReminders };

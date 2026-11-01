@@ -9,11 +9,13 @@ const tg = require('./tg');
 const L = require('./logic');
 require('./assistant');   // голосовые и свободный текст в боте (ИИ)
 const B = require('./billing');
+const PAY = require('./pay');
 const { today, nowLocal, addDays, fmtDue } = require('./time');
 
 const app = express();
 app.set('trust proxy', 1);
 app.use(express.json({ limit: '200kb' }));
+app.use(express.urlencoded({ extended: false, limit: '50kb' }));   // Click присылает форму
 app.use(cookieParser());
 
 const COOKIE = 'orb_s';
@@ -280,6 +282,9 @@ const needFeature = (f, name) => (req, res, next) => (async () => {
 app.use(['/api/plans', '/api/habits'], (req, res, next) => loadSession(req).then(s => { req.s = req.s || s; next(); }).catch(next), needFeature('plans', 'Мои планы'));
 app.use('/api/wallet', (req, res, next) => loadSession(req).then(s => { req.s = req.s || s; next(); }).catch(next), needFeature('wallet', 'Кошелёк'));
 
+/* ---------- онлайн-оплата: счёт → QR Payme / Click → автопродление ---------- */
+PAY.routes(app, { auth, wrap, clean });
+
 /* ---------- администрирование платформы: отметка оплат ---------- */
 const platformAdmin = () => (req, res, next) => B.isPlatformAdmin(req.s.user).then(ok => ok ? next() : res.status(403).json({ error: 'Только для администратора платформы' })).catch(next);
 app.get('/api/admin/overview', auth(false), platformAdmin(), wrap(async (req, res) => {
@@ -297,31 +302,21 @@ app.get('/api/admin/overview', auth(false), platformAdmin(), wrap(async (req, re
   const pays = await db.all(`SELECT p.*, c.name AS company, u.name AS user FROM payments p LEFT JOIN companies c ON c.id=p.company_id LEFT JOIN users u ON u.id=p.user_id ORDER BY p.id DESC LIMIT 50`);
   res.json({ companies, users, payments: pays.map(p => ({ id: p.id, kind: p.kind, company: p.company, user: p.user, months: p.months, amount: Number(p.amount), at: p.at })), price: { unit: B.UNIT_UZS, solo: B.uzs(B.PRICE.solo), pack: B.uzs(B.PRICE.pack) } });
 }));
-const extendDate = (cur, months) => { const base = cur && cur >= today() ? cur : today(); const d = new Date(base + 'T12:00:00Z'); d.setUTCMonth(d.getUTCMonth() + months); return d.toISOString().slice(0, 10); };
 app.post('/api/admin/company/:id/paid', auth(false), platformAdmin(), wrap(async (req, res) => {
   const months = Math.max(1, Math.min(12, Number(req.body.months) || 1));
   const co = await db.one(`SELECT * FROM companies WHERE id=$1`, [Number(req.params.id)]);
   if (!co) return res.status(404).json({ error: 'Компания не найдена' });
-  const info = await B.companyInfo(co.id), until = extendDate(co.paid_until, months);
-  await db.q(`UPDATE companies SET paid_until=$1 WHERE id=$2`, [until, co.id]);
-  await db.q(`INSERT INTO payments (kind, company_id, months, amount, by_user) VALUES ('company',$1,$2,$3,$4)`, [co.id, months, info.sum * months, req.s.user.id]);
-  res.json({ ok: true, paidUntil: until });
+  const info = await B.companyInfo(co.id);
+  const r = await B.applyPayment({ kind: 'company', companyId: co.id, months, amount: info.sum * months, byUser: req.s.user.id, note: 'вручную' }, tg);
+  res.json({ ok: true, paidUntil: r.until });
 }));
 app.post('/api/admin/user/:id/ai', auth(false), platformAdmin(), wrap(async (req, res) => {
   const u = await db.one(`SELECT * FROM users WHERE id=$1`, [Number(req.params.id)]);
   if (!u) return res.status(404).json({ error: 'Пользователь не найден' });
-  if (req.body.pack) {
-    await db.q(`INSERT INTO ai_usage (user_id, month, extra_min) VALUES ($1,$2,$3) ON CONFLICT (user_id, month) DO UPDATE SET extra_min = ai_usage.extra_min + EXCLUDED.extra_min`, [u.id, today().slice(0, 7), B.PACK_MIN]);
-    await db.q(`INSERT INTO payments (kind, user_id, amount, note, by_user) VALUES ('pack',$1,$2,$3,$4)`, [u.id, B.uzs(B.PRICE.pack), `+${B.PACK_MIN} мин`, req.s.user.id]);
-    return res.json({ ok: true });
-  }
-  const months = Math.max(1, Math.min(12, Number(req.body.months) || 1)), until = extendDate(u.ai_paid_until, months);
-  await db.q(`UPDATE users SET ai_paid_until=$1 WHERE id=$2`, [until, u.id]);
-  await db.q(`INSERT INTO payments (kind, user_id, months, amount, by_user) VALUES ('ai',$1,$2,$3,$4)`, [u.id, months, B.uzs(B.PRICE.solo) * months, req.s.user.id]);
-  if (u.tg_id > 0) await tg.send(u.tg_id, `✅ ИИ-помощник оплачен до ${until}. Спасибо!
-
-Голосовые и свободный текст снова работают.`, { open: false });
-  res.json({ ok: true, paidUntil: until });
+  if (req.body.pack) { await B.applyPayment({ kind: 'pack', userId: u.id, amount: B.uzs(B.PRICE.pack), byUser: req.s.user.id, note: `+${B.PACK_MIN} мин` }, tg); return res.json({ ok: true }); }
+  const months = Math.max(1, Math.min(12, Number(req.body.months) || 1));
+  const r = await B.applyPayment({ kind: 'ai', userId: u.id, months, amount: B.uzs(B.PRICE.solo) * months, byUser: req.s.user.id, note: 'вручную' }, tg);
+  res.json({ ok: true, paidUntil: r.until });
 }));
 app.get('/api/admin/find-user', auth(false), platformAdmin(), wrap(async (req, res) => {
   const q = clean(req.query.q, 60).replace(/^@/, '');

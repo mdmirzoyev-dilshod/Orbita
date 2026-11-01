@@ -537,7 +537,8 @@ function billingCard(){
       <div class="bill-lines">${c.lines.length ? c.lines.map(l=>`<div><span>${esc(l.name)} × ${l.n}</span><span class="num">${money(l.total)}</span></div>`).join('') : '<div class="note">Работников пока нет — счёт 0 сум. Пригласите сотрудников, чтобы ставить им задачи.</div>'}
         <div class="bill-total"><span>Итого в месяц</span><b class="num">${money(c.sum)}</b></div></div>
       <div class="bill-info"><div>👤 Работник — <b>${money(12000)}</b>: задачи, бот, ИИ-помощник (20 мин голоса)</div><div>🗓 «Мои планы» — <b>+${money(12000)}</b></div><div>👛 «Кошелёк» — <b>+${money(12000)}</b></div>
-        <div class="note">${c.inTrial ? 'В пробный период всё включено для всех. ' : ''}${!c.active ? 'Пока счёт не оплачен, у работников отключены ИИ, «Мои планы» и «Кошелёк» — задачи работают. ' : ''}${payText()}</div></div>
+        <div class="note">${c.inTrial ? 'В пробный период всё включено для всех. ' : ''}${!c.active ? 'Пока счёт не оплачен, у работников отключены ИИ, «Мои планы» и «Кошелёк» — задачи работают. ' : ''}</div>
+        ${c.sum ? `<div class="paybar"><select id="pay-months" aria-label="Срок оплаты">${[[1,'1 месяц'],[3,'3 месяца'],[6,'6 месяцев'],[12,'12 месяцев']].map(([v,l])=>`<option value="${v}">${l} — ${money(c.sum*v)}</option>`).join('')}</select><button class="btn primary sm" data-pay="company">Оплатить по QR</button></div>` : ''}</div>
     </div></div>`;
 }
 function aiCard(){
@@ -548,10 +549,32 @@ function aiCard(){
   return `<div class="card"><div class="card-h"><div><h3>🤖 ИИ-помощник</h3><p>${a.on ? SRC[a.src] : 'Не активен'} · ${sub}</p></div>${a.on?'<span class="chip s-done">Включён</span>':'<span class="chip s-new">Выключен</span>'}</div>
     ${a.on ? `<div class="aiu"><div><span>Голосовые</span><span class="num">${String(a.usedMin).replace('.',',')} из ${a.limitMin} мин</span></div><div class="bar"><i style="width:${pm}%;background:${pm>90?'var(--bad)':'var(--blue)'}"></i></div>
       <div><span>Сообщения ИИ</span><span class="num">${a.usedMsgs} из ${a.limitMsgs}</span></div><div class="bar"><i style="width:${pq}%;background:${pq>90?'var(--bad)':'var(--blue)'}"></i></div></div>
-      <p class="note" style="margin-top:8px">Лимит обновляется 1-го числа.${a.src==='trial'?` После пробного месяца — ${money(a.price.solo)} в месяц.`:''}</p>`
-    : `<p style="margin:0 0 6px">Голосом: «Мадине до завтра подготовить отчёт», «потратил 50 тысяч на такси».</p><p class="note">${a.trialStarted?'Пробный месяц закончился. ':''}ИИ-помощник — <b>${money(a.price.solo)}</b> в месяц (60 мин голоса, 500 сообщений). В команде ИИ входит в тариф компании. ${payText()}</p>`}
+      <p class="note" style="margin-top:8px">Лимит обновляется 1-го числа.${a.src==='trial'?` После пробного месяца — ${money(a.price.solo)} в месяц.`:''}</p>
+      <div class="paybar">${a.src==='trial'||a.src==='solo'?`<button class="btn sm primary" data-pay="ai">${a.src==='solo'?'Продлить':'Оплатить'} ИИ — ${money(a.price.solo)}</button>`:''}<button class="btn sm" data-pay="pack">+${a.price.packMin} мин — ${money(a.price.pack)}</button></div>`
+    : `<p style="margin:0 0 6px">Голосом: «Мадине до завтра подготовить отчёт», «потратил 50 тысяч на такси».</p><p class="note">${a.trialStarted?'Пробный месяц закончился. ':''}ИИ-помощник — <b>${money(a.price.solo)}</b> в месяц (60 мин голоса, 500 сообщений). В команде ИИ входит в тариф компании.</p><div class="paybar"><button class="btn sm primary" data-pay="ai">Оплатить по QR — ${money(a.price.solo)}</button></div>`}
   </div>`;
 }
+/* ---------- онлайн-оплата по QR ---------- */
+let PAYT = null;
+async function openPay(kind){
+  let inv;
+  try { inv = await api('POST','/api/pay/invoice',{kind, months: kind==='company' ? Number(($('pay-months')||{}).value||1) : 1}); } catch(e){ return toast(e.message); }
+  const ps = [['payme','Payme','#33CCCC'],['click','Click','#0F8BFF']].filter(([k])=>inv.links[k]);
+  const qr = k => `<div class="payqr" data-pq="${k}" ${k!==ps[0][0]?'hidden':''}><img src="/api/pay/qr?u=${encodeURIComponent(inv.links[k])}" alt="QR-код для оплаты через ${k==='payme'?'Payme':'Click'}" width="220" height="220"><p class="note">Отсканируйте камерой телефона или приложением ${k==='payme'?'Payme':'Click'}</p><a class="btn primary" href="${esc(inv.links[k])}" target="_blank" rel="noopener">Открыть ${k==='payme'?'Payme':'Click'}</a></div>`;
+  modal(`<div class="modal" role="dialog" aria-label="Оплата">
+    <h2>Оплата</h2>
+    <div class="payhead"><div><b>${esc(inv.name)}</b><small>${inv.kind==='pack'?'на этот месяц':inv.months+' мес.'} · счёт №${inv.id}</small></div><b class="num">${money(inv.amount)}</b></div>
+    ${ps.length ? `<div class="tabs paytabs">${ps.map(([k,l],i)=>`<button type="button" class="${i?'':'on'}" data-pt="${k}">${l}</button>`).join('')}</div>${ps.map(([k])=>qr(k)).join('')}
+      <p class="note paywait" id="pay-wait">⏳ Ждём подтверждение оплаты… Тариф продлится автоматически.</p>`
+    : `<p>Онлайн-оплата ещё подключается.</p><p class="note">${B_().pay ? 'Оплатить можно сейчас: '+esc(B_().pay) : 'Напишите администратору «Орбиты» — после оплаты тариф продлят вручную.'}</p>`}
+    <div class="mact"><button type="button" class="btn" data-close="1">Закрыть</button></div></div>`);
+  clearInterval(PAYT);
+  if(ps.length) PAYT = setInterval(async()=>{
+    if(!document.querySelector('.payqr')) return clearInterval(PAYT);
+    try { const r = await api('GET','/api/pay/invoice/'+inv.id); if(r.status==='paid'){ clearInterval(PAYT); closeModal(); toast('✅ Оплата получена — спасибо!'); await reload(); render(); } } catch(e){}
+  }, 3000);
+}
+
 /* ---------- админка платформы ---------- */
 let ADM = null, ADQ = '', ADF = [];
 async function loadAdmin(){ try { ADM = await api('GET','/api/admin/overview'); } catch(e){ ADM = {error:e.message}; } if(current()==='admin') render(); }
@@ -851,9 +874,11 @@ async function boot(){
 
 /* ---------- события ---------- */
 document.addEventListener('click', e => {
-  const el = e.target.closest('[data-addon],[data-admpay],[data-ext],[data-wk],[data-wcat],[data-wedit],[data-wdel],[data-bud],[data-act],[data-open],[data-tick],[data-plan],[data-pdel],[data-pedit],[data-hedit],[data-hdel],[data-hab],[data-status],[data-close],[data-delete],[data-sw],[data-cf],[data-view],[data-mode]');
+  const el = e.target.closest('[data-pay],[data-pt],[data-addon],[data-admpay],[data-ext],[data-wk],[data-wcat],[data-wedit],[data-wdel],[data-bud],[data-act],[data-open],[data-tick],[data-plan],[data-pdel],[data-pedit],[data-hedit],[data-hdel],[data-hab],[data-status],[data-close],[data-delete],[data-sw],[data-cf],[data-view],[data-mode]');
   if(!el) return;
   if(el.dataset.close && e.target !== el && !e.target.closest('button[data-close]')) return;
+  if(el.dataset.pay) return openPay(el.dataset.pay);
+  if(el.dataset.pt){ document.querySelectorAll('[data-pt]').forEach(b=>b.classList.toggle('on', b===el)); document.querySelectorAll('[data-pq]').forEach(d=>d.hidden = d.dataset.pq!==el.dataset.pt); return; }
   if(el.dataset.addon){ const [id,k] = el.dataset.addon.split('|'); const u = U(Number(id)); const on = !u[k];
     return act(()=>api('PATCH','/api/members/'+id,{[k]:on}), `${k==='plansOn'?'«Мои планы»':'«Кошелёк»'} ${on?'подключён':'отключён'} — ${u.name}`); }
   if(el.dataset.admpay){ const [kind,id,m] = el.dataset.admpay.split('|');
