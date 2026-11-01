@@ -5,7 +5,7 @@ const { today, fmtDue } = require('./time');
 const TOKEN = process.env.BOT_TOKEN || '';
 const API = `https://api.telegram.org/bot${TOKEN}`;
 let BOT_USERNAME = process.env.BOT_USERNAME || '';
-const handlers = { done: null, extend: null };   // заполняется сервером (смена статуса с уведомлениями)
+const handlers = { done: null, extend: null, transcribe: null, reply: null, assist: null, callback: null };   // заполняются logic.js и assistant.js
 
 const appUrl = () => process.env.APP_URL || (process.env.RAILWAY_PUBLIC_DOMAIN ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}` : '');
 const enabled = () => Boolean(TOKEN);
@@ -36,7 +36,20 @@ async function send(chatId, text, opts = {}) {
   if (opts.buttons) rows.push(...opts.buttons);
   const ob = openButton(opts.path);
   if (ob && opts.open !== false) rows.push(ob);
-  return call('sendMessage', { chat_id: chatId, text, disable_web_page_preview: true, reply_markup: rows.length ? { inline_keyboard: rows } : undefined });
+  const r = await call('sendMessage', { chat_id: chatId, text, disable_web_page_preview: true, reply_markup: rows.length ? { inline_keyboard: rows } : undefined });
+  // запоминаем, к какой задаче относится сообщение — чтобы ответ на него стал комментарием
+  const taskId = opts.taskId || opts.doneTaskId;
+  if (taskId && r && r.ok) await db.q(`INSERT INTO tg_msgs (chat_id, message_id, task_id) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING`, [chatId, r.result.message_id, taskId]).catch(() => {});
+  return r;
+}
+
+// скачать файл (голосовое) из Telegram
+async function download(fileId) {
+  const f = await call('getFile', { file_id: fileId });
+  if (!f || !f.ok) throw new Error('не удалось получить файл');
+  const r = await fetch(`https://api.telegram.org/file/bot${TOKEN}/${f.result.file_path}`);
+  if (!r.ok) throw new Error('не удалось скачать файл');
+  return Buffer.from(await r.arrayBuffer());
 }
 
 async function upsertUser(from) {
@@ -48,10 +61,30 @@ async function upsertUser(from) {
 }
 
 async function onMessage(m) {
-  const text = (m.text || '').trim();
+  let text = (m.text || m.caption || '').trim();
   const chat = m.chat.id;
   if (m.chat.type !== 'private') return;
   const user = await upsertUser(m.from);
+
+  // голосовое → текст (ИИ)
+  let voice = false;
+  const media = m.voice || m.audio || m.video_note;
+  if (media) {
+    if (!handlers.transcribe) return send(chat, '🎙 Голосовые пока не подключены: в настройках сервера нужно добавить ключ ИИ (OPENAI_API_KEY). Текстом всё работает.', { open: false });
+    if ((media.duration || 0) > 300) return send(chat, '🎙 Голосовое длиннее 5 минут — разбейте, пожалуйста, на части.', { open: false });
+    call('sendChatAction', { chat_id: chat, action: 'typing' });
+    try { text = await handlers.transcribe(await download(media.file_id), user); }
+    catch (e) { console.warn('[ai] stt', e.message); return send(chat, '😕 Не удалось распознать голосовое. Попробуйте ещё раз или напишите текстом.', { open: false }); }
+    if (!text) return send(chat, '😕 Не расслышал. Попробуйте ещё раз или напишите текстом.', { open: false });
+    voice = true;
+  }
+
+  // ответ на сообщение о задаче → комментарий к задаче
+  if (m.reply_to_message && text && !text.startsWith('/') && handlers.reply) {
+    const link = await db.one(`SELECT task_id FROM tg_msgs WHERE chat_id=$1 AND message_id=$2`, [chat, m.reply_to_message.message_id]);
+    if (link && link.task_id) return handlers.reply({ chat, user, taskId: link.task_id, text, voice });
+  }
+  if (voice) text = text.replace(/^\//, '');
 
   if (text.startsWith('/start') || text.startsWith('/login')) {
     const arg = text.split(' ')[1] || '';
@@ -68,7 +101,7 @@ async function onMessage(m) {
     const head = confirmed
       ? `✅ Вход подтверждён, ${user.name}!\n\nВернитесь в браузер — страница откроется сама. Если не открылась, нажмите кнопку ниже.`
       : `Здравствуйте, ${user.name}! Это бот «Орбиты» — задачи и личные планы команды.\n\nНажмите кнопку ниже, чтобы войти на сайт (кнопка действует 15 минут).`;
-    return call('sendMessage', { chat_id: chat, text: head + `\n\nСюда будут приходить задачи, напоминания и итоги дня.\nКоманды: /tasks — мои задачи, /plan — план на сегодня, /wallet — кошелёк, /login — войти на сайт\n\n👛 Чтобы записать расход, просто напишите: «45000 такси»`, reply_markup: rows.length ? { inline_keyboard: rows } : undefined });
+    return call('sendMessage', { chat_id: chat, text: head + `\n\nСюда будут приходить задачи, напоминания и итоги дня.\nКоманды: /tasks — мои задачи, /plan — план на сегодня, /wallet — кошелёк, /login — войти на сайт\n\n👛 Расход: «45000 такси», доход: «+5 000 000 зарплата»\n🎙 Можно голосом: «Мадине до завтра 15:00 подготовить отчёт», «потратил 120 тысяч на продукты»\n↩️ Ответ на сообщение о задаче станет комментарием`, reply_markup: rows.length ? { inline_keyboard: rows } : undefined });
   }
 
   // Кошелёк: «45000 такси» — записать расход, «+5 000 000 зарплата» — доход
@@ -88,7 +121,7 @@ async function onMessage(m) {
   }
 
   const members = await db.all(`SELECT m.*, c.name AS company FROM members m JOIN companies c ON c.id=m.company_id WHERE m.user_id=$1 AND m.active`, [user.id]);
-  if (!members.length) return send(chat, 'Вы пока не состоите ни в одной компании. Откройте сайт «Орбиты», войдите и создайте компанию или примите приглашение.');
+  if (!members.length && (text.startsWith('/') || !handlers.assist)) return send(chat, 'Вы пока не состоите ни в одной компании. Откройте сайт «Орбиты», войдите и создайте компанию или примите приглашение.');
 
   if (text.startsWith('/tasks')) {
     const ids = members.map(x => x.id);
@@ -104,11 +137,13 @@ async function onMessage(m) {
     const done = items.filter(i => i.done).length;
     return send(chat, `🗓 План на сегодня: ${done} из ${items.length}\n\n${items.map(i => (i.done ? '✅ ' : i.important ? '⭐ ' : '▫️ ') + (i.time ? i.time + ' ' : '') + i.text).join('\n')}`, { path: '/#plans' });
   }
+  if (handlers.assist && text) return handlers.assist({ chat, user, text, voice, members });
   return send(chat, 'Команды:\n/tasks — мои задачи\n/plan — мой план на сегодня\n/wallet — кошелёк за месяц\n\n👛 Записать расход: «45000 такси», доход: «+5 000 000 зарплата»');
 }
 
 async function onCallback(cq) {
   const data = cq.data || '';
+  if (handlers.callback && await handlers.callback(cq)) return;
   if (data.startsWith('wdel:')) {
     const user = await db.one(`SELECT * FROM users WHERE tg_id=$1`, [cq.from.id]);
     const r = user ? await db.q(`DELETE FROM wallet_tx WHERE id=$1 AND user_id=$2`, [Number(data.slice(5)), user.id]) : { rowCount: 0 };
@@ -166,4 +201,4 @@ async function poll() {
 }
 function stop() { running = false; }
 
-module.exports = { send, poll, stop, enabled, botUsername, appUrl, handlers, upsertUser, onMessage, onCallback };
+module.exports = { call, download, send, poll, stop, enabled, botUsername, appUrl, handlers, upsertUser, onMessage, onCallback };

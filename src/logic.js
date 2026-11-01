@@ -38,7 +38,7 @@ async function notify(memberId, text, opts = {}) {
   if (s.tg === false) return;
   if (opts.kind === 'assign' && s.onAssign === false) return;
   if (['done', 'status', 'comment', 'review'].includes(opts.kind) && s.onDone === false) return;
-  await tg.send(m.tg_id, text, { doneTaskId: opts.doneTaskId, path: opts.path, buttons: opts.buttons });
+  await tg.send(m.tg_id, text, { doneTaskId: opts.doneTaskId, taskId: opts.taskId, path: opts.path, buttons: opts.buttons });
 }
 
 // Основное участие человека (самое раннее активное) — туда идут личные напоминания и итоги дня
@@ -167,7 +167,7 @@ async function tick() {
     const was = dueLabel(t.due, t.due_time), who = await memberName(t.assignee_id);
     await notify(t.assignee_id, `🔴 Срок истёк\n«${t.title}»\nСрок был: ${was}\n\nЕсли нужно больше времени — напишите в комментарии к задаче.`, { kind: 'overdue', doneTaskId: t.id, path: '/#tasks' });
     for (const to of await extendersToNotify(t)) {
-      await notify(to, `🔴 Просрочена задача\nИсполнитель: ${who}\n«${t.title}»\nСрок был: ${was}\n\nДобавить время?`, { kind: 'overdue', path: '/#tasks', buttons: EXT_BUTTONS(t.id) });
+      await notify(to, `🔴 Просрочена задача\nИсполнитель: ${who}\n«${t.title}»\nСрок был: ${was}\n\nДобавить время?`, { kind: 'overdue', taskId: t.id, path: '/#tasks', buttons: EXT_BUTTONS(t.id) });
     }
   }
   // напоминание до срока (срок задачи — указанное время, по умолчанию 18:00)
@@ -182,6 +182,42 @@ async function tick() {
     }
   }
 }
+/* ---------- задачи и комментарии (общие для сайта и бота) ---------- */
+async function canSeeTask(me, t) {
+  if (!me || !t || t.company_id !== me.company_id) return false;
+  if (t.assignee_id === me.id || t.author_id === me.id || isAdmin(me)) return true;
+  if (me.role === 'manager') return scopeOf(me, await companyMembers(me.company_id)).includes(t.assignee_id);
+  return false;
+}
+const REPLY_HINT = '\n\n↩️ Ответьте на это сообщение (текстом или голосом) — ответ добавится в комментарии к задаче.';
+async function createTask(me, b) {
+  const title = String(b.title || '').trim().slice(0, 200);
+  if (!title) return { error: 'Напишите, что нужно сделать' };
+  const assignee = Number(b.assignee) || me.id;
+  if (!scopeOf(me, await companyMembers(me.company_id)).includes(assignee)) return { error: 'Этому сотруднику вы не можете ставить задачи' };
+  const isD = s => /^\d{4}-\d{2}-\d{2}$/.test(s || ''), isT = s => /^\d{2}:\d{2}$/.test(s || '');
+  const due = isD(b.due) ? b.due : addDays(today(), 1);
+  const dueTime = isT(b.dueTime) ? b.dueTime : null;
+  const remind = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(b.remind || '') ? b.remind : null;
+  const priority = ['high', 'medium', 'low'].includes(b.priority) ? b.priority : 'medium';
+  const descr = String(b.desc || '').trim().slice(0, 2000);
+  const t = await db.one(`INSERT INTO tasks (company_id, title, descr, assignee_id, author_id, priority, created_on, due, due_time, remind_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
+    [me.company_id, title, descr, assignee, me.id, priority, today(), due, dueTime, remind]);
+  if (assignee !== me.id) {
+    const who = await memberName(me.id);
+    await notify(assignee, `📌 Новая задача\nот: ${who}\n\n«${title}»\nСрок: ${fmtDue(due)}${dueTime ? ' до ' + dueTime : ''} · Приоритет: ${PRIO[priority]}${descr ? '\n\n' + descr : ''}${remind ? '\n⏰ Напомню ' + remind.replace('T', ' в ') : ''}${REPLY_HINT}`, { kind: 'assign', doneTaskId: t.id, path: '/#tasks' });
+  }
+  return { task: t };
+}
+async function addComment(t, me, text) {
+  text = String(text || '').trim().slice(0, 2000);
+  if (!text) return { error: 'Пустой комментарий' };
+  await db.q(`INSERT INTO comments (task_id, member_id, text, at) VALUES ($1,$2,$3,$4)`, [t.id, me.id, text, nowLocal()]);
+  const who = await memberName(me.id);
+  for (const to of new Set([t.assignee_id, t.author_id])) if (to && to !== me.id) await notify(to, `💬 ${who} к задаче «${t.title}»:\n${text}${REPLY_HINT}`, { kind: 'comment', taskId: t.id, path: '/#tasks' });
+  return { ok: true };
+}
+
 /* ---------- продление срока ---------- */
 const EXT = { '2h': { hours: 2, label: '+2 часа' }, '1d': { days: 1, label: '+1 день' }, '3d': { days: 3, label: '+3 дня' }, '7d': { days: 7, label: '+неделя' } };
 const EXT_BUTTONS = id => [[{ text: '+2 часа', callback_data: `ext:${id}:2h` }, { text: '+1 день', callback_data: `ext:${id}:1d` }], [{ text: '+3 дня', callback_data: `ext:${id}:3d` }, { text: '+неделя', callback_data: `ext:${id}:7d` }]];
@@ -242,4 +278,4 @@ tg.handlers.extend = async (taskId, userId, code) => {
 
 function addMinutes(hhmm, n) { const [h, m] = hhmm.split(':').map(Number); const x = h * 60 + m + n; return `${String(Math.min(23, Math.floor(x / 60))).padStart(2, '0')}:${String(x >= 1440 ? 59 : x % 60).padStart(2, '0')}`; }
 
-module.exports = { EXT, extendTask, canExtend, ADMIN, isAdmin, STATUS, PRIO, companyMembers, scopeOf, notify, memberName, changeStatus, morningDigest, eveningDigest, tick };
+module.exports = { canSeeTask, createTask, addComment, primaryMemberId, EXT, extendTask, canExtend, ADMIN, isAdmin, STATUS, PRIO, companyMembers, scopeOf, notify, memberName, changeStatus, morningDigest, eveningDigest, tick };

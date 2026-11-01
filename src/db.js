@@ -183,6 +183,20 @@ CREATE TABLE IF NOT EXISTS wallet_tx (
   created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS wallet_user_day ON wallet_tx(user_id, day);
+CREATE TABLE IF NOT EXISTS tg_msgs (
+  chat_id     BIGINT NOT NULL,
+  message_id  BIGINT NOT NULL,
+  task_id     INT REFERENCES tasks(id) ON DELETE CASCADE,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (chat_id, message_id)
+);
+CREATE TABLE IF NOT EXISTS ai_drafts (
+  id          SERIAL PRIMARY KEY,
+  user_id     INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  data        JSONB NOT NULL,
+  used        BOOLEAN NOT NULL DEFAULT false,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 CREATE TABLE IF NOT EXISTS wallet_budgets (
   user_id     INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   category    TEXT NOT NULL,

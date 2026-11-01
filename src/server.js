@@ -7,6 +7,7 @@ const cookieParser = require('cookie-parser');
 const db = require('./db');
 const tg = require('./tg');
 const L = require('./logic');
+require('./assistant');   // голосовые и свободный текст в боте (ИИ)
 const { today, nowLocal, addDays, fmtDue } = require('./time');
 
 const app = express();
@@ -212,29 +213,12 @@ app.get('/api/state', auth(), wrap(async (req, res) => {
 /* ---------- задачи ---------- */
 async function visibleTask(me, id) {
   const t = await db.one(`SELECT * FROM tasks WHERE id=$1 AND company_id=$2`, [id, me.company_id]);
-  if (!t) return null;
-  if (t.assignee_id === me.id || t.author_id === me.id || L.isAdmin(me)) return t;
-  if (me.role === 'manager') { const scope = L.scopeOf(me, await L.companyMembers(me.company_id)); if (scope.includes(t.assignee_id)) return t; }
-  return null;
+  return (await L.canSeeTask(me, t)) ? t : null;
 }
 app.post('/api/tasks', auth(), wrap(async (req, res) => {
-  const me = req.me, b = req.body;
-  const title = clean(b.title, 200);
-  if (!title) return res.status(400).json({ error: 'Напишите, что нужно сделать' });
-  const assignee = Number(b.assignee) || me.id;
-  const scope = L.scopeOf(me, await L.companyMembers(me.company_id));
-  if (!scope.includes(assignee)) return res.status(403).json({ error: 'Этому сотруднику вы не можете ставить задачи' });
-  const due = isDate(b.due) ? b.due : addDays(today(), 1);
-  const remind = isDT(b.remind) ? b.remind : null;
-  const priority = ['high', 'medium', 'low'].includes(b.priority) ? b.priority : 'medium';
-  const dueTime = /^\d{2}:\d{2}$/.test(b.dueTime || '') ? b.dueTime : null;
-  const t = await db.one(`INSERT INTO tasks (company_id, title, descr, assignee_id, author_id, priority, created_on, due, due_time, remind_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
-    [me.company_id, title, clean(b.desc, 2000), assignee, me.id, priority, today(), due, dueTime, remind]);
-  if (assignee !== me.id) {
-    const who = await L.memberName(me.id);
-    await L.notify(assignee, `📌 Новая задача\nот: ${who}\n\n«${title}»\nСрок: ${fmtDue(due)}${dueTime ? ' до ' + dueTime : ''} · Приоритет: ${L.PRIO[priority]}${t.descr ? '\n\n' + t.descr : ''}${remind ? '\n⏰ Напомню ' + remind.replace('T', ' в ') : ''}`, { kind: 'assign', doneTaskId: t.id, path: '/#tasks' });
-  }
-  res.json({ id: t.id });
+  const r = await L.createTask(req.me, req.body);
+  if (r.error) return res.status(r.error.startsWith('Этому') ? 403 : 400).json({ error: r.error });
+  res.json({ id: r.task.id });
 }));
 app.patch('/api/tasks/:id', auth(), wrap(async (req, res) => {
   const t = await visibleTask(req.me, Number(req.params.id));
@@ -273,12 +257,9 @@ app.delete('/api/tasks/:id', auth(), wrap(async (req, res) => {
 }));
 app.post('/api/tasks/:id/comments', auth(), wrap(async (req, res) => {
   const t = await visibleTask(req.me, Number(req.params.id));
-  const text = clean(req.body.text, 1000);
   if (!t) return res.status(404).json({ error: 'Задача не найдена' });
-  if (!text) return res.status(400).json({ error: 'Пустой комментарий' });
-  await db.q(`INSERT INTO comments (task_id, member_id, text, at) VALUES ($1,$2,$3,$4)`, [t.id, req.me.id, text, nowLocal()]);
-  const who = await L.memberName(req.me.id);
-  for (const to of new Set([t.assignee_id, t.author_id])) if (to && to !== req.me.id) await L.notify(to, `💬 ${who} к задаче «${t.title}»:\n${text}`, { kind: 'comment', path: '/#tasks' });
+  const r = await L.addComment(t, req.me, clean(req.body.text, 1000));
+  if (r.error) return res.status(400).json(r);
   res.json({ ok: true });
 }));
 
