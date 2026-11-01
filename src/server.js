@@ -26,14 +26,14 @@ const wrap = fn => (req, res) => fn(req, res).catch(e => { console.error(e); res
 async function loadSession(req) {
   const token = req.cookies[COOKIE];
   if (!token) return null;
-  const s = await db.one(`SELECT s.*, u.name, u.tg_id, u.username FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token=$1`, [token]);
+  const s = await db.one(`SELECT s.*, u.name, u.tg_id, u.username, u.demo FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token=$1`, [token]);
   if (!s) return null;
   let member = s.member_id ? await db.one(`SELECT * FROM members WHERE id=$1 AND user_id=$2 AND active`, [s.member_id, s.user_id]) : null;
   if (!member) {
     member = await db.one(`SELECT * FROM members WHERE user_id=$1 AND active ORDER BY created_at LIMIT 1`, [s.user_id]);
     if (member) await db.q(`UPDATE sessions SET member_id=$1 WHERE token=$2`, [member.id, token]);
   }
-  return { token, user: { id: s.user_id, name: s.name, tg_id: s.tg_id, username: s.username }, member };
+  return { token, back: s.back_token, user: { id: s.user_id, name: s.name, tg_id: s.tg_id, username: s.username, demo: s.demo }, member };
 }
 const auth = (needMember = true) => async (req, res, next) => {
   try {
@@ -56,7 +56,7 @@ app.get('/api/me', wrap(async (req, res) => {
   const base = { bot: tg.botUsername(), botReady: tg.enabled(), devLogin: process.env.DEV_LOGIN === '1' };
   if (!s) return res.json({ ...base, user: null });
   const companies = await db.all(`SELECT m.id AS member_id, m.role, c.id, c.name FROM members m JOIN companies c ON c.id=m.company_id WHERE m.user_id=$1 AND m.active ORDER BY m.created_at`, [s.user.id]);
-  res.json({ ...base, user: s.user, member: s.member ? s.member.id : null, companies });
+  res.json({ ...base, user: s.user, member: s.member ? s.member.id : null, companies, viewingAs: Boolean(s.back) });
 }));
 
 app.post('/api/auth/start', wrap(async (req, res) => {
@@ -198,7 +198,7 @@ app.get('/api/state', auth(), wrap(async (req, res) => {
     isAdmin: L.isAdmin(me),
     scope,
     depts: depts.map(d => ({ id: d.id, name: d.name, color: d.color })),
-    users: members.map(m => ({ id: m.id, name: m.name, role: m.role === 'worker' ? 'worker' : 'manager', level: m.role, owner: m.role === 'owner', admin: L.ADMIN.includes(m.role), dept: m.dept || 'Без отдела', deptId: m.dept_id, deptColor: m.dept_color || '#9AA3C7', title: m.title || '', boss: m.boss_id, tg: Boolean(m.tg_id) && (m.settings || {}).tg !== false, username: m.username })),
+    users: members.map(m => ({ id: m.id, name: m.name, demo: Boolean(m.demo), role: m.role === 'worker' ? 'worker' : 'manager', level: m.role, owner: m.role === 'owner', admin: L.ADMIN.includes(m.role), dept: m.dept || 'Без отдела', deptId: m.dept_id, deptColor: m.dept_color || '#9AA3C7', title: m.title || '', boss: m.boss_id, tg: Boolean(m.tg_id) && (m.settings || {}).tg !== false, username: m.username })),
     tasks: tasks.map(t => ({ id: t.id, title: t.title, desc: t.descr, assignee: t.assignee_id, author: t.author_id, priority: t.priority, status: t.status, created: t.created_on, due: t.due, remind: t.remind_at, doneAt: t.done_on,
       comments: comments.filter(c => c.task_id === t.id).map(c => ({ u: c.member_id, t: c.text, at: c.at })) })),
     plans: P,
@@ -417,6 +417,60 @@ app.patch('/api/members/:id', auth(), wrap(async (req, res) => {
   await db.q(`UPDATE members SET role=$1, dept_id=$2, title=$3, boss_id=$4, active=$5 WHERE id=$6`, [role, deptId, b.title !== undefined ? clean(b.title, 60) : m.title, bossId, active, m.id]);
   res.json({ ok: true });
 }));
+/* ---------- демо-сотрудники: посмотреть процесс без настоящих людей ---------- */
+app.post('/api/demo', auth(), wrap(async (req, res) => {
+  if (!L.isAdmin(req.me)) return res.status(403).json({ error: 'Только для руководства компании' });
+  const co = req.me.company_id, t0 = today();
+  const exists = await db.one(`SELECT count(*)::int AS n FROM members m JOIN users u ON u.id=m.user_id WHERE m.company_id=$1 AND u.demo AND m.active`, [co]);
+  if (exists.n) return res.status(400).json({ error: 'Демо-сотрудники уже добавлены' });
+  const dept = async name => (await db.one(`INSERT INTO depts (company_id, name, color) VALUES ($1,$2,$3) ON CONFLICT (company_id, name) DO UPDATE SET name=EXCLUDED.name RETURNING id`, [co, name, DEPT_COLORS[1]])).id;
+  const d1 = await dept('Продажи');
+  const mk = async (name, role, title, boss) => {
+    const u = await db.one(`INSERT INTO users (name, demo) VALUES ($1, true) RETURNING id`, [name]);
+    return (await db.one(`INSERT INTO members (company_id, user_id, role, dept_id, title, boss_id) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`, [co, u.id, role, d1, title, boss])).id;
+  };
+  const lead = await mk('Демо: Азиз', 'manager', 'Руководитель отдела', req.me.id);
+  const w1 = await mk('Демо: Мадина', 'worker', 'Менеджер', lead);
+  const w2 = await mk('Демо: Бехзод', 'worker', 'Менеджер', lead);
+  const T = (title, a, author, pr, st, created, due, extra = {}) => db.q(
+    `INSERT INTO tasks (company_id, title, descr, assignee_id, author_id, priority, status, created_on, due, done_on) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+    [co, title, extra.desc || '', a, author, pr, st, addDays(t0, created), addDays(t0, due), st === 'done' ? addDays(t0, extra.doneAgo || -1) : null]);
+  await T('Еженедельный отчёт по продажам', lead, req.me.id, 'high', 'progress', -3, 2, { desc: 'Итоги недели по каждому менеджеру.' });
+  await T('План продаж на следующий месяц', lead, req.me.id, 'medium', 'new', -1, 6);
+  await T('Обзвонить 10 корпоративных клиентов', w1, lead, 'high', 'progress', -4, -1);
+  await T('Подготовить коммерческое предложение', w1, lead, 'medium', 'review', -2, 1);
+  await T('Сверка оплат за неделю', w2, lead, 'medium', 'new', 0, 0);
+  await T('Обновить базу клиентов', w2, lead, 'low', 'done', -6, -2, { doneAgo: -2 });
+  const plan = async (mid, items) => { const u = await db.one(`SELECT user_id FROM members WHERE id=$1`, [mid]); for (const [txt, done, time] of items) await db.q(`INSERT INTO plan_items (user_id, day, text, done, time) VALUES ($1,$2,$3,$4,$5)`, [u.user_id, t0, txt, done, time || null]); };
+  await plan(lead, [['Планёрка с отделом', true, '09:30'], ['Проверить отчёты менеджеров', false, '12:00'], ['Встреча с клиентом', false, '15:00']]);
+  await plan(w1, [['Звонки клиентам', true, '10:00'], ['Отправить КП', true], ['Обновить CRM', false]]);
+  await plan(w2, [['Сверка оплат', false, '11:00'], ['Ответить на заявки', false]]);
+  res.json({ ok: true });
+}));
+app.delete('/api/demo', auth(), wrap(async (req, res) => {
+  if (!L.isAdmin(req.me)) return res.status(403).json({ error: 'Только для руководства компании' });
+  const r = await db.q(`DELETE FROM users u USING members m WHERE m.user_id=u.id AND u.demo AND m.company_id=$1`, [req.me.company_id]);
+  res.json({ ok: true, removed: r.rowCount });
+}));
+// «Войти как» демо-сотрудник и вернуться к себе
+app.post('/api/view-as', auth(), wrap(async (req, res) => {
+  if (!L.isAdmin(req.me)) return res.status(403).json({ error: 'Только для руководства компании' });
+  const m = await db.one(`SELECT m.* FROM members m JOIN users u ON u.id=m.user_id WHERE m.id=$1 AND m.company_id=$2 AND u.demo AND m.active`, [Number(req.body.memberId), req.me.company_id]);
+  if (!m) return res.status(404).json({ error: 'Войти можно только за демо-сотрудника' });
+  const token = rid();
+  await db.q(`INSERT INTO sessions (token, user_id, member_id, back_token) VALUES ($1,$2,$3,$4)`, [token, m.user_id, m.id, req.s.token]);
+  res.cookie(COOKIE, token, { httpOnly: true, sameSite: 'lax', secure: Boolean(req.secure), maxAge: 1000 * 60 * 60 * 12 });
+  res.json({ ok: true });
+}));
+app.post('/api/view-back', auth(false), wrap(async (req, res) => {
+  if (!req.s.back) return res.json({ ok: true });
+  const back = await db.one(`SELECT token FROM sessions WHERE token=$1`, [req.s.back]);
+  await db.q(`DELETE FROM sessions WHERE token=$1`, [req.s.token]);
+  if (back) res.cookie(COOKIE, back.token, { httpOnly: true, sameSite: 'lax', secure: Boolean(req.secure), maxAge: 1000 * 60 * 60 * 24 * 90 });
+  else res.clearCookie(COOKIE);
+  res.json({ ok: true });
+}));
+
 app.patch('/api/company', auth(), wrap(async (req, res) => {
   if (!L.isAdmin(req.me)) return res.status(403).json({ error: 'Только учредитель, владелец или директор' });
   const name = clean(req.body.name, 80);

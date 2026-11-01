@@ -62,7 +62,7 @@ const bossOptions = (except, sel) => S.users.filter(x=>x.role==='manager' && x.i
 const late = t => t.status!=='done' && t.due && t.due < TODAY;
 const deptColor = name => { const d = S.depts.find(x=>x.name===name); return d ? d.color : '#9AA3C7'; };
 const AVC = c => c==='#FFD23F' ? '#141729' : c;
-const av = (u,size) => `<span class="av" style="background:${AVC(u.deptColor||deptColor(u.dept))};${size?`width:${size}px;height:${size}px;font-size:${Math.round(size*.38)}px`:''}" aria-hidden="true">${esc((u.name||'?').slice(0,1))}</span>`;
+const av = (u,size) => `<span class="av" style="background:${AVC(u.deptColor||deptColor(u.dept))};${size?`width:${size}px;height:${size}px;font-size:${Math.round(size*.38)}px`:''}" aria-hidden="true">${esc((u.name||'?').replace(/^Демо:\s*/,'').slice(0,1))}</span>`;
 const myUnread = () => S.notifs.filter(n=>!n.read).length;
 const statusChip = t => late(t) ? `<span class="chip overdue">Просрочено</span>` : `<span class="chip s-${t.status}">${STATUS[t.status]}</span>`;
 const plansFor = (u,day) => ((S.plans[u]||{})[day]||[]);
@@ -158,11 +158,13 @@ function shell(){
       <div class="ws"><div class="logo">${esc(initials(S.company.name))}</div><div><b>${esc(S.company.name)}</b><small>Орбита · Бизнес</small></div></div>
       <div class="area" id="area"></div><nav class="nav" id="nav"></nav>
       <div class="me-box" id="mebox"></div>
-    </aside><main class="main" id="main"></main></div><nav class="tabbar" id="tabbar"></nav>`;
+    </aside><main class="main"><div id="viewbar"></div><div id="main"></div></main></div><nav class="tabbar" id="tabbar"></nav>`;
 }
 const coSwitch = id => `<select id="${id}" class="coswitch" aria-label="Компания">${ME.companies.map(c=>`<option value="${c.member_id}" ${c.member_id===S.me?'selected':''}>${esc(c.name)}${c.role==='owner'?' · владелец':''}</option>`).join('')}<option value="new">+ Создать новую компанию…</option></select>`;
 const initials = s => (s||'?').split(/\s+/).filter(Boolean).slice(0,2).map(w=>w[0]).join('').toUpperCase();
+function renderViewbar(){ const v=$('viewbar'); if(!v) return; v.innerHTML = ME && ME.viewingAs ? `<div class="viewbar">👁 Вы смотрите «Орбиту» как <b>${esc(me().name)}</b> (${esc(me().title||'')}). Действия выполняются от его имени.<button class="btn sm y" data-act="viewback">Вернуться к себе</button></div>` : ''; }
 function renderNav(){
+  renderViewbar();
   const cur = current(), unread = myUnread();
   const mineT = isMgr()?scopeTasks():S.tasks.filter(t=>t.assignee===S.me);
   const lateN = mineT.filter(late).length;
@@ -216,7 +218,7 @@ function vOverview(){
   const counts = depts.map(dp=>[dp, scope().filter(u=>u.dept===dp).length]);
   const alone = scope().length <= 1;
   return header('Команда<span>›</span>Обзор', 'Обзор команды', `<button class="btn primary" data-act="new">${ICON.plus}Поставить задачу</button>`) + `
-  ${alone?`<div class="card" style="margin-bottom:16px;display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap"><div><b>В команде пока только вы.</b><div class="note">Пригласите сотрудников — они войдут через Telegram по ссылке.</div></div><button class="btn y" data-act="invite">${ICON.plus}Пригласить сотрудника</button></div>`:''}
+  ${alone?`<div class="card" style="margin-bottom:16px;display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap"><div><b>В команде пока только вы.</b><div class="note">Пригласите сотрудников — они войдут через Telegram по ссылке.</div></div><span style="display:flex;gap:8px;flex-wrap:wrap">${isOwner()?'<button class="btn" data-act="demo-add">Показать на демо-сотрудниках</button>':''}<button class="btn y" data-act="invite">${ICON.plus}Пригласить сотрудника</button></span></div>`:''}
   <div class="grid kpis">
     <div class="card kpi hero"><div class="lab"><span class="ic">${ICON.flame}</span>Задач в работе<span class="delta">${dAct>=0?'↗':'↘'} ${Math.abs(dAct)} за неделю</span></div>
       <div class="row"><div><div class="v num">${act.length}</div><div class="sub">${ts.filter(t=>t.created>=addDays(TODAY,-7)).length} новых за 7 дней</div></div>${spark(sAct,'#141729','#FFD23F')}</div></div>
@@ -294,7 +296,7 @@ function startConstellation(demo){
   });
   const pos = (nd, t) => {
     if(nd.isTop && !(nd.u.boss)) { const tops = nodes.filter(n=>n.isTop); if(tops.length===1) return [cx(), cy()]; }
-    const base = (nd.di/Math.max(1,depts.length)) * Math.PI*2 - Math.PI/2;
+    const base = depts.length===1 ? 0 : (nd.di/Math.max(1,depts.length)) * Math.PI*2 - Math.PI/2;
     const f = nd.u.role==='manager' ? .62 : .97;
     const rx = Math.min(W*.42, 420) * f, ry = Math.max(30,((BOTY()-TOPY())/2 - 18)) * f;
     const spread = nd.u.role==='manager' ? 0 : ((nd.k - (nd.n-1)/2) * .36);
@@ -322,8 +324,8 @@ function startConstellation(demo){
       ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x,y,r*3.2,0,7); ctx.fill();
       ctx.fillStyle = dim ? hexA(col,.3) : col; ctx.beginPath(); ctx.arc(x,y,r,0,7); ctx.fill();
       if(nd.u.name){
-        ctx.fillStyle = dim ? 'rgba(10,15,60,.4)' : 'rgba(10,15,60,.85)'; ctx.font = `700 ${nd.isTop?12:r>8?10:9}px Onest, system-ui, sans-serif`; ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillText(nd.u.name.slice(0,1), x, y+.5);
-        if(!dim && (nd.isTop || nd.u.role==='manager' || W>700)){ ctx.fillStyle='rgba(232,236,255,.75)'; ctx.font='600 10.5px Onest, system-ui, sans-serif'; ctx.fillText(nd.u.name.split(' ')[0], x, y+r+13+(nd.tasks.length?6:0)); }
+        ctx.fillStyle = dim ? 'rgba(10,15,60,.4)' : 'rgba(10,15,60,.85)'; ctx.font = `700 ${nd.isTop?12:r>8?10:9}px Onest, system-ui, sans-serif`; ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillText(nd.u.name.replace(/^Демо:\s*/,'').slice(0,1), x, y+.5);
+        if(!dim && (nd.isTop || nd.u.role==='manager' || W>700)){ ctx.fillStyle='rgba(232,236,255,.75)'; ctx.font='600 10.5px Onest, system-ui, sans-serif'; ctx.fillText(nd.u.name.replace(/^Демо:\s*/,'').split(' ')[0], x, y+r+13+(nd.tasks.length?6:0)); }
       }
       if(!demo && mouse && Math.hypot(mouse[0]-x, mouse[1]-y) < r+8) hover = {nd,x,y};
     });
@@ -457,15 +459,19 @@ function vPlans(){
 function vTeam(){
   const list = S.users.filter(u => !F.q || (u.name+u.title+u.dept).toLowerCase().includes(F.q.toLowerCase()));
   const vis = id => S.scope.includes(id);
-  return header('Команда<span>›</span>Люди', 'Команда', isMgr()?`<button class="btn primary" data-act="invite">${ICON.plus}Пригласить</button>`:'') + `<div class="grid team">${list.map(u=>{
+  const hasDemo = S.users.some(u=>u.demo);
+  const demoBtn = isOwner() ? (hasDemo ? `<button class="btn" data-act="demo-del">Удалить демо</button>` : `<button class="btn" data-act="demo-add">Добавить демо-сотрудников</button>`) : '';
+  return header('Команда<span>›</span>Люди', 'Команда', demoBtn + (isMgr()?`<button class="btn primary" data-act="invite">${ICON.plus}Пригласить</button>`:'')) +
+    (isOwner() && hasDemo ? `<div class="card demo-note"><b>Демо-режим.</b> Нажмите «Войти как» у демо-сотрудника, чтобы увидеть «Орбиту» его глазами: его задачи, план, отметки. Демо-сотрудникам уведомления в Telegram не уходят.</div>` : '') +
+    `<div class="grid team">${list.map(u=>{
     const mine=S.tasks.filter(t=>t.assignee===u.id), a=mine.filter(t=>t.status!=='done').length, od=mine.filter(late).length, dn=mine.filter(t=>t.status==='done').length;
     const p=planPct(u.id,TODAY), boss = u.boss ? U(u.boss).name : null;
     return `<div class="card tc"><div class="person">${av(u,42)}<div><b>${esc(u.name)}</b><small>${esc(u.title||roleName(u))} · ${esc(u.dept)}</small>${u.title&&roleName(u)?`<small>Роль: ${esc(roleName(u))}</small>`:''}${boss?`<small>Руководитель: ${esc(boss)}</small>`:''}</div></div>
       ${vis(u.id)?`<div class="stats"><div><b class="num">${a}</b><small>в работе</small></div><div><b class="num" style="color:${od?'var(--bad)':'inherit'}">${od}</b><small>просрочено</small></div><div><b class="num">${dn}</b><small>готово</small></div></div>
       <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--muted);margin-bottom:6px"><span>План дня</span><span class="num" style="color:var(--ink);font-weight:700">${p==null?'—':p+'%'}</span></div>
       <div class="bar"><i style="width:${p||0}%"></i></div>`:'<p class="note">Задачи этого сотрудника видит его руководитель.</p>'}
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-top:14px;gap:8px;flex-wrap:wrap"><span class="chip ${u.tg?'s-progress':'s-new'}">${u.tg?'Telegram подключён':'Уведомления выключены'}</span>
-      <span style="display:flex;gap:6px">${isOwner()&&u.id!==S.me?`<button class="btn sm" data-act="editm" data-id="${u.id}">Изменить</button>`:''}${vis(u.id)&&u.id!==S.me&&isMgr()?`<button class="btn sm" data-act="new" data-for="${u.id}">${ICON.plus}Задача</button>`:''}</span></div></div>`; }).join('')}</div>`;
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-top:14px;gap:8px;flex-wrap:wrap">${u.demo?'<span class="chip s-review">Демо</span>':`<span class="chip ${u.tg?'s-progress':'s-new'}">${u.tg?'Telegram подключён':'Уведомления выключены'}</span>`}
+      <span style="display:flex;gap:6px;flex-wrap:wrap">${u.demo&&isOwner()?`<button class="btn sm primary" data-act="viewas" data-id="${u.id}">Войти как</button>`:''}${isOwner()&&u.id!==S.me?`<button class="btn sm" data-act="editm" data-id="${u.id}">Изменить</button>`:''}${vis(u.id)&&u.id!==S.me&&isMgr()?`<button class="btn sm" data-act="new" data-for="${u.id}">${ICON.plus}Задача</button>`:''}</span></div></div>`; }).join('')}</div>`;
 }
 
 /* ---------- уведомления ---------- */
@@ -672,6 +678,10 @@ document.addEventListener('click', e => {
   const a = el.dataset.act;
   if(a==='new') return openNew(el.dataset.for);
   if(a==='invite') return openInvite();
+  if(a==='demo-add') return act(()=>api('POST','/api/demo'),'Добавлены 3 демо-сотрудника с задачами').then(()=>{ location.hash='team'; });
+  if(a==='demo-del'){ if(el.dataset.confirm!=='1'){ el.dataset.confirm='1'; el.textContent='Точно удалить демо?'; return; } return act(()=>api('DELETE','/api/demo'),'Демо-сотрудники удалены'); }
+  if(a==='viewas') return (async()=>{ try { await api('POST','/api/view-as',{memberId:Number(el.dataset.id)}); location.hash=''; await boot(); toast('Вы вошли как '+me().name); } catch(err){ toast(err.message); } })();
+  if(a==='viewback') return (async()=>{ await api('POST','/api/view-back'); location.hash='team'; await boot(); toast('Вы вернулись к себе'); })();
   if(a==='habit-more') return openHabit(null, $('habit-text') ? $('habit-text').value.trim() : '');
   if(a==='plan-more') return openPlanNew($('plan-text') ? $('plan-text').value.trim() : '');
   if(a==='editm') return openEditMember(Number(el.dataset.id));

@@ -195,6 +195,8 @@ async function migrate() {
   await q(`DELETE FROM habits h USING habits h2 WHERE h.user_id = h2.user_id AND lower(h.name) = lower(h2.name) AND h.id > h2.id`);
   await q(`DELETE FROM plan_items p USING plan_items p2 WHERE p.user_id = p2.user_id AND p.day = p2.day AND p.text = p2.text
            AND p.time IS NOT DISTINCT FROM p2.time AND p.id > p2.id`);
+  await q(`ALTER TABLE users ADD COLUMN IF NOT EXISTS demo BOOLEAN NOT NULL DEFAULT false`);
+  await q(`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS back_token TEXT`);
   await q(`ALTER TABLE members DROP CONSTRAINT IF EXISTS members_role_check`);
   await q(`ALTER TABLE members ADD CONSTRAINT members_role_check CHECK (role IN ('owner','founder','director','manager','worker'))`);
 }
