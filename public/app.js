@@ -67,6 +67,8 @@ const late = t => t.status!=='done' && t.due && (t.due < TODAY || (t.due===TODAY
 const dueText = t => (t.due===TODAY?'сегодня':fmt(t.due)) + (t.dueTime?' до '+t.dueTime:'');
 const canExtend = t => t.status!=='done' && (t.author===S.me || isOwner() || (isMgr() && t.assignee!==S.me));
 const deptColor = name => { const d = S.depts.find(x=>x.name===name); return d ? d.color : '#9AA3C7'; };
+const CV = n => (getComputedStyle(document.documentElement).getPropertyValue('--'+n)||'').trim() || '#888';
+const ARGB = a => `rgba(${CV('accent-rgb')},${a})`;
 const AVC = c => c==='#FFD23F' ? '#141729' : c;
 const av = (u,size) => `<span class="av" style="background:${AVC(u.deptColor||deptColor(u.dept))};${size?`width:${size}px;height:${size}px;font-size:${Math.round(size*.38)}px`:''}" aria-hidden="true">${esc((u.name||'?').replace(/^Демо:\s*/,'').slice(0,1))}</span>`;
 const myUnread = () => S.notifs.filter(n=>!n.read).length;
@@ -84,7 +86,7 @@ function spark(vals, color, dot){
   const pts = vals.map((v,i)=>[i*(w/(vals.length-1)), h-4-((v-mn)/rg)*(h-10)]);
   const dpath = pts.map((p,i)=>(i?'L':'M')+p[0].toFixed(1)+' '+p[1].toFixed(1)).join(' ');
   const last = pts[pts.length-1];
-  return `<svg class="spark" viewBox="0 0 ${w} ${h}" aria-hidden="true"><path d="${dpath}" fill="none" stroke="${color}" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/><circle cx="${last[0]}" cy="${last[1]}" r="4" fill="${dot||'#fff'}" stroke="${color}" stroke-width="2.2"/></svg>`;
+  return `<svg class="spark" viewBox="0 0 ${w} ${h}" aria-hidden="true"><path d="${dpath}" fill="none" stroke="${color}" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/><circle cx="${last[0]}" cy="${last[1]}" r="4" fill="${dot||CV('surface')}" stroke="${color}" stroke-width="2.2"/></svg>`;
 }
 const series = fn => Array.from({length:8},(_,i)=>fn(addDays(TODAY,i-7)));
 const activeOn = (ts,day) => ts.filter(t=>t.created<=day && (!t.doneAt || t.doneAt>day)).length;
@@ -93,7 +95,7 @@ const doneWeek = (ts,day) => ts.filter(t=>t.doneAt && t.doneAt<=day && t.doneAt>
 function avgPlan(ids,day){ const v = ids.map(id=>planPct(id,day)).filter(x=>x!=null); return v.length ? Math.round(v.reduce((a,b)=>a+b,0)/v.length) : null; }
 function ring(p, size){
   const r=size/2-8, c=2*Math.PI*r, off=c*(1-(p||0)/100);
-  return `<svg viewBox="0 0 ${size} ${size}" aria-hidden="true"><circle cx="${size/2}" cy="${size/2}" r="${r}" fill="none" stroke="#E3E7F7" stroke-width="10"/><circle cx="${size/2}" cy="${size/2}" r="${r}" fill="none" stroke="var(--blue)" stroke-width="10" stroke-linecap="round" stroke-dasharray="${c}" stroke-dashoffset="${off}" transform="rotate(-90 ${size/2} ${size/2})"/></svg>`;
+  return `<svg viewBox="0 0 ${size} ${size}" aria-hidden="true"><circle cx="${size/2}" cy="${size/2}" r="${r}" fill="none" stroke="${CV('line')}" stroke-width="10"/><circle cx="${size/2}" cy="${size/2}" r="${r}" fill="none" stroke="var(--blue)" stroke-width="10" stroke-linecap="round" stroke-dasharray="${c}" stroke-dashoffset="${off}" transform="rotate(-90 ${size/2} ${size/2})"/></svg>`;
 }
 
 /* ---------- экраны входа ---------- */
@@ -217,7 +219,7 @@ function vOverview(){
   const depts = [...new Set(scope().map(u=>u.dept))];
   const days10 = Array.from({length:10},(_,i)=>addDays(TODAY,i-9));
   const heat = depts.map(dp => { const us = scope().filter(u=>u.dept===dp).map(u=>u.id);
-      return `<span class="rl">${esc(dp)}</span>` + days10.map(d=>{ const p = avgPlan(us,d); const a = p==null ? .06 : .14 + (p/100)*.86; return `<span class="c" title="${esc(dp)}, ${fmt(d)}: ${p==null?'нет планов':p+'%'}" style="background:rgba(47,85,228,${a.toFixed(2)})"></span>`; }).join(''); }).join('')
+      return `<span class="rl">${esc(dp)}</span>` + days10.map(d=>{ const p = avgPlan(us,d); const a = p==null ? .06 : .14 + (p/100)*.86; return `<span class="c" title="${esc(dp)}, ${fmt(d)}: ${p==null?'нет планов':p+'%'}" style="background:${ARGB(a.toFixed(2))}"></span>`; }).join(''); }).join('')
     + '<span></span>' + days10.map(d=>`<span class="dl">${new Date(d+'T12:00:00').getDate()}</span>`).join('');
   const teamPlan = avgPlan(ids, TODAY), prevPlan = avgPlan(ids, addDays(TODAY,-1));
   const rows = scope().filter(u=>u.id!==S.me).map(u => {
@@ -229,18 +231,21 @@ function vOverview(){
   const attention = [...over, ...act.filter(t=>t.due===TODAY && !late(t))];
   const counts = depts.map(dp=>[dp, scope().filter(u=>u.dept===dp).length]);
   const alone = scope().length <= 1;
-  return header('Команда<span>›</span>Обзор', 'Обзор команды', `<button class="btn primary" data-act="new">${ICON.plus}Поставить задачу</button>`) + `
+  const teamDisc = scope().filter(u=>u.id!==S.me).map(u=>discipline(u.id)).reduce((a,d)=>({onTime:a.onTime+d.onTime,lateDone:a.lateDone+d.lateDone,over:a.over+d.over,total:a.total+d.total}),{onTime:0,lateDone:0,over:0,total:0});
+  teamDisc.pct = teamDisc.total ? Math.round(teamDisc.onTime/teamDisc.total*100) : null;
+  return header('Команда<span>›</span>Командный центр', 'Командный центр', `<button class="btn primary" data-act="new">${ICON.plus}Поставить задачу</button>`) + `
   ${alone?`<div class="card" style="margin-bottom:16px;display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap"><div><b>В команде пока только вы.</b><div class="note">Пригласите сотрудников — они войдут через Telegram по ссылке.</div></div><span style="display:flex;gap:8px;flex-wrap:wrap">${isOwner()?'<button class="btn" data-act="demo-add">Показать на демо-сотрудниках</button>':''}<button class="btn y" data-act="invite">${ICON.plus}Пригласить сотрудника</button></span></div>`:''}
   <div class="grid kpis">
     <div class="card kpi hero"><div class="lab"><span class="ic">${ICON.flame}</span>Задач в работе<span class="delta">${dAct>=0?'↗':'↘'} ${Math.abs(dAct)} за неделю</span></div>
-      <div class="row"><div><div class="v num">${act.length}</div><div class="sub">${ts.filter(t=>t.created>=addDays(TODAY,-7)).length} новых за 7 дней</div></div>${spark(sAct,'#141729','#FFD23F')}</div></div>
-    <div class="card kpi"><div class="lab"><span class="ic">${ICON.alert}</span>Просрочено<span class="delta" style="${over.length?'background:var(--bad-soft);color:var(--bad)':''}">${over.length?'нужно внимание':'всё в срок'}</span></div>
-      <div class="row"><div><div class="v num ${over.length?'bad':''}">${over.length}</div><div class="sub">${act.filter(t=>t.due===TODAY).length} со сроком сегодня</div></div>${spark(sLate,'#E0483D')}</div></div>
-    <div class="card kpi"><div class="lab"><span class="ic">${ICON.done}</span>Выполнено · 7 дней<span class="delta">${dDone>=0?'↗':'↘'} ${Math.abs(dDone)}</span></div>
-      <div class="row"><div><div class="v num">${sDone[7]}</div><div class="sub">закрыто задач за неделю</div></div>${spark(sDone,'#2F55E4')}</div></div>
+      <div class="row"><div><div class="v num">${act.length}</div><div class="sub">${ts.filter(t=>t.created>=addDays(TODAY,-7)).length} новых за 7 дней</div></div>${spark(sAct,CV('ink'),CV('yellow'))}</div></div>
+    <div class="card kpi ${over.length?'alarm':''}"><div class="lab"><span class="ic">${ICON.alert}</span>Горит<span class="delta" style="${over.length?'background:var(--bad-soft);color:var(--bad)':''}">${over.length?'нужно внимание':'всё в срок'}</span></div>
+      <div class="row"><div><div class="v num ${over.length?'bad':''}">${over.length}</div><div class="sub">${act.filter(t=>t.due===TODAY).length} со сроком сегодня</div></div>${spark(sLate,CV('bad'))}</div></div>
+    <div class="card kpi"><div class="lab"><span class="ic">${ICON.done}</span>Вовремя · 30 дней<span class="delta">${sDone[7]} за 7 дн.</span></div>
+      <div class="row"><div><div class="v num" style="color:${teamDisc.pct==null?'inherit':teamDisc.pct>=80?'var(--ok)':teamDisc.pct>=50?'var(--warn)':'var(--bad)'}">${teamDisc.pct==null?'—':teamDisc.pct}<small>${teamDisc.pct==null?'':'%'}</small></div><div class="sub">${teamDisc.total?`${teamDisc.onTime} вовремя · ${teamDisc.lateDone} с опозданием · ${teamDisc.over} горит`:'появится, когда будут задачи со сроком'}</div></div>${spark(sDone,CV('blue'))}</div></div>
     <div class="card kpi"><div class="lab"><span class="ic">${ICON.target}</span>Личные планы<span class="delta">${teamPlan==null||prevPlan==null?'сегодня':(teamPlan>=prevPlan?'↗ ':'↘ ')+(teamPlan==null||prevPlan==null?'':Math.abs(teamPlan-prevPlan)+' п.')}</span></div>
-      <div class="row"><div><div class="v num">${teamPlan==null?'—':teamPlan}<small>${teamPlan==null?'':'%'}</small></div><div class="sub">${teamPlan==null?'планы на сегодня ещё не записаны':'средний план дня команды'}</div></div>${spark(sPlan,'#2F55E4')}</div></div>
+      <div class="row"><div><div class="v num">${teamPlan==null?'—':teamPlan}<small>${teamPlan==null?'':'%'}</small></div><div class="sub">${teamPlan==null?'планы на сегодня ещё не записаны':'средний план дня команды'}</div></div>${spark(sPlan,CV('blue'))}</div></div>
   </div>
+  <div class="grid low-grid" style="margin-top:16px">${disciplineCard()}${feedCard()}</div>
   <div class="grid ov-grid">
     <section class="live" id="live" aria-label="Созвездие команды">
       <canvas id="cv" aria-hidden="true"></canvas>
@@ -252,22 +257,47 @@ function vOverview(){
     </section>
     <div class="card"><div class="card-h"><div><h3>Пульс дисциплины</h3><p>Выполнение личных планов · 10 дней</p></div><div style="text-align:right"><div class="bigstat"><b class="num">${teamPlan==null?'—':teamPlan+'%'}</b></div>${teamPlan!=null&&prevPlan!=null?`<span class="pill ${teamPlan>=prevPlan?'ok':'bad'}">${teamPlan>=prevPlan?'↗':'↘'} ${Math.abs(teamPlan-prevPlan)} к вчера</span>`:''}</div></div>
       <div class="heat">${heat}</div>
-      <div class="legend">меньше <i style="background:rgba(47,85,228,.15)"></i><i style="background:rgba(47,85,228,.4)"></i><i style="background:rgba(47,85,228,.7)"></i><i style="background:rgba(47,85,228,1)"></i> больше</div>
+      <div class="legend">меньше <i style="background:${ARGB(.15)}"></i><i style="background:${ARGB(.4)}"></i><i style="background:${ARGB(.7)}"></i><i style="background:${ARGB(1)}"></i> больше</div>
     </div>
   </div>
   <div class="grid low-grid">
     <div class="card"><div class="card-h"><div><h3>Сотрудники</h3><p>Задачи и план дня каждого</p></div>${isMgr()?`<button class="btn sm" data-act="invite">${ICON.plus}Пригласить</button>`:''}</div>
       ${rows?`<div class="scroll"><table class="tbl"><thead><tr><th>Сотрудник</th><th class="hide-s">Отдел</th><th class="n">В работе</th><th class="n">Просрочено</th><th>План дня</th></tr></thead><tbody>${rows}</tbody></table></div>`:'<div class="empty">Здесь появятся ваши сотрудники</div>'}</div>
-    <div class="card"><div class="card-h"><div><h3>Требует внимания</h3><p>Просрочено и срок сегодня</p></div><span class="pill bad num">${attention.length}</span></div>
-      <div>${attention.length ? attention.map(taskRow).join('') : '<div class="empty">Просрочек и задач на сегодня нет</div>'}</div></div>
+    ${decisionCard(attention)}
   </div>
-  <div class="grid low-grid">${disciplineCard()}<div class="card"><div class="card-h"><div><h3>Повторяющиеся задачи</h3><p>Создаются сами в нужные дни</p></div></div>${seriesList()}</div></div>`;
+  <div class="grid low-grid"><div class="card"><div class="card-h"><div><h3>Повторяющиеся задачи</h3><p>Создаются сами в нужные дни</p></div></div>${seriesList()}</div><div class="card"><div class="card-h"><div><h3>Срок сегодня</h3><p>Задачи команды на сегодня</p></div></div>${(()=>{ const td = scopeTasks().filter(t=>t.status!=='done' && t.due===TODAY && !late(t)); return td.length ? td.map(taskRow).join('') : '<div class="empty">На сегодня задач со сроком нет</div>'; })()}</div></div>`;
 }
 function seriesList(){
   const seen = new Map(); S.tasks.filter(t=>t.series && t.series.active).forEach(t=>{ if(!seen.has(t.series.id) || seen.get(t.series.id).due < t.due) seen.set(t.series.id, t); });
   const arr = [...seen.values()];
   return arr.length ? arr.map(t=>`<div class="wrow" data-open="${t.id}" role="button" tabindex="0"><span class="wc-ic" style="background:var(--blue-soft)">🔁</span><div style="flex:1;min-width:0"><b>${esc(t.title)}</b><small>${esc(U(t.assignee).name)} · ${esc(REPEAT_RU[t.series.repeat]||'')}${t.dueTime?' · до '+t.dueTime:''}</small></div></div>`).join('')
     : '<div class="empty">Нет. При создании задачи выберите «Повторять: каждый день» — например, открытие точки или ежедневный отчёт.</div>';
+}
+
+
+/* ---------- командный центр: лента и решения ---------- */
+function feedCard(){
+  const ids = new Set(scopeIds());
+  const ev = [];
+  for(const t of S.tasks){ if(!ids.has(t.assignee) && !ids.has(t.author)) continue;
+    for(const c of t.comments) ev.push({at:c.at, who:U(c.u).name, text:c.t.replace(/\s+/g,' ').slice(0,80), task:t, bad:/Попросил|истёк/.test(c.t)});
+    if(late(t)) ev.push({at:(t.due+'T'+(t.dueTime||'23:59')), who:U(t.assignee).name, text:'срок истёк', task:t, bad:true});
+    if(t.status==='done' && t.doneAt) ev.push({at:t.doneAt+'T00:00', who:U(t.assignee).name, text:'выполнил(а)', task:t});
+  }
+  ev.sort((a,b)=>b.at.localeCompare(a.at));
+  const tm = at => at.slice(0,10)===TODAY ? (at.slice(11,16)==='00:00'?'сегодня':at.slice(11,16)) : fmt(at.slice(0,10));
+  return `<div class="card"><div class="card-h"><div><h3>Лента</h3><p>Что происходит в команде</p></div><span class="live-dot">● live</span></div>
+    ${ev.length ? ev.slice(0,7).map(e=>`<div class="feed-row ${e.bad?'bad':''}" data-open="${e.task.id}" role="button" tabindex="0" style="cursor:pointer"><time>${esc(tm(e.at))}</time><span><b>${esc(e.who)}</b> · ${esc(e.text)} <span class="note">— ${esc(e.task.title.slice(0,40))}</span></span></div>`).join('')
+      : '<div class="empty">Здесь появятся комментарии, фото-отчёты и выполненные задачи</div>'}</div>`;
+}
+function decisionCard(attention){
+  const asks = scopeTasks().filter(t=>t.status!=='done' && t.comments.some(c=>/Попросил\(а\) больше времени/.test(c.t)) && !t.comments.some((c,i,arr)=>/Срок продлён/.test(c.t) && i > arr.findIndex(x=>/Попросил/.test(x.t))));
+  const lateT = attention.filter(t=>late(t) && !asks.includes(t));
+  const can = t => canExtend(t);
+  const box = (t, sub, hot) => `<div class="dec ${hot?'hot':''}"><b>${esc(t.title)}</b><small>${sub}</small><div class="acts">${can(t)?`<button class="btn sm" data-ext="${t.id}|2h">+2 ч</button><button class="btn sm" data-ext="${t.id}|1d">+1 день</button><button class="btn sm" data-ext="${t.id}|3d">+3 дня</button>`:''}<button class="btn sm" data-open="${t.id}">Открыть</button></div></div>`;
+  const items = [...asks.map(t=>box(t, `${esc(U(t.assignee).name)} просит больше времени · срок ${esc(dueText(t))}`, true)), ...lateT.map(t=>box(t, `${esc(U(t.assignee).name)} · просрочено, срок был ${esc(dueText(t))}`, true))];
+  return `<div class="card"><div class="card-h"><div><h3>Требует решения</h3><p>Просьбы о времени и просрочки</p></div><span class="pill bad num">${items.length}</span></div>
+    ${items.length ? items.slice(0,6).join('') : '<div class="empty">Всё под контролем — решений не требуется</div>'}</div>`;
 }
 
 /* ---------- дисциплина: выполнено вовремя за 30 дней ---------- */
@@ -399,7 +429,7 @@ function vTimeline(list){
   const capPath = pts.map((p,i)=>(i?'L':'M')+p[0].toFixed(2)+' '+p[1].toFixed(1)).join(' ');
   const people = S.users.filter(u=>list.some(t=>t.assignee===u.id));
   const dayHead = days.map(d=>{ const x=new Date(d+'T12:00:00'), we=x.getDay()===0||x.getDay()===6; return `<div class="d ${we?'we':''} ${d===TODAY?'today':''}">${WD[x.getDay()].slice(0,1)}<b class="num">${x.getDate()}</b></div>`; }).join('');
-  const bgcols = days.map((d,i)=>{ const x=new Date(d+'T12:00:00'); return (x.getDay()===0||x.getDay()===6) ? `<span class="bgcol" style="left:${i*cw}%;width:${cw}%;background:rgba(238,240,247,.7)"></span>` : ''; }).join('');
+  const bgcols = days.map((d,i)=>{ const x=new Date(d+'T12:00:00'); return (x.getDay()===0||x.getDay()===6) ? `<span class="bgcol" style="left:${i*cw}%;width:${cw}%"></span>` : ''; }).join('');
   const lanes = people.map(u => {
     const rows = [];
     list.filter(t=>t.assignee===u.id).sort((a,b)=>a.created.localeCompare(b.created)).forEach(t => {
@@ -425,7 +455,7 @@ function vTimeline(list){
       <div class="lg"><span><i style="border-color:#6F8BF0;background:#EEF2FF"></i>В работе</span><span><i style="border-color:#C9CEE0"></i>Новая</span><span><i style="border-color:#F2B84B;background:#FFF5DC"></i>На проверке</span><span><i style="border-color:#F08A82;background:var(--bad-soft)"></i>Просрочено</span><span><i style="border-color:#9BD8C2;background:var(--ok-soft)"></i>Готово</span></div></div>
     <div class="tl"><div class="tl-in">
       <div class="tl-row"><div class="who" style="flex-direction:column;align-items:flex-start;gap:0"><span class="eyebrow" style="color:var(--muted)">Нагрузка по срокам</span><small style="color:var(--muted);font-size:11px">${mx?`пик: ${mx} · ${fmt(days[peakI])}`:'сроков нет'}</small></div>
-        <div class="cap"><svg viewBox="0 0 100 56" preserveAspectRatio="none" aria-hidden="true"><path d="${capPath}" fill="none" stroke="#D5DBF5" stroke-width="5" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round"/>${pts.map((p,i)=>i<N-1&&(dueCount[i]||dueCount[i+1])?`<path d="M${p[0]} ${p[1]} L${pts[i+1][0]} ${pts[i+1][1]}" stroke="#2F55E4" stroke-width="5" vector-effect="non-scaling-stroke" stroke-linecap="round"/>`:'').join('')}</svg>
+        <div class="cap"><svg viewBox="0 0 100 56" preserveAspectRatio="none" aria-hidden="true"><path d="${capPath}" fill="none" stroke="${CV('line')}" stroke-width="5" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round"/>${pts.map((p,i)=>i<N-1&&(dueCount[i]||dueCount[i+1])?`<path d="M${p[0]} ${p[1]} L${pts[i+1][0]} ${pts[i+1][1]}" stroke="${CV('blue')}" stroke-width="5" vector-effect="non-scaling-stroke" stroke-linecap="round"/>`:'').join('')}</svg>
         ${mx>0?`<span style="position:absolute;left:calc(${(peakI+.5)*cw}% - 22px);top:-6px;background:var(--ink);color:#fff;font-size:10px;font-weight:700;border-radius:10px;padding:1px 7px">${mx} срок.</span>`:''}</div></div>
       <div class="tl-row"><div class="who"><span class="eyebrow" style="color:var(--muted)">Сотрудник</span></div><div class="tl-days" style="--n:${N}">${dayHead}</div></div>
       ${lanes || '<div class="empty">Нет задач в этом периоде. Нажмите «Поставить задачу».</div>'}
@@ -536,6 +566,7 @@ function vAlerts(){
       </div>
       ${aiCard()}
       <div class="card"><div class="card-h"><div><h3>Профиль</h3><p>${esc(me().name)} · ${esc(S.company.name)}</p></div></div>
+        <div class="field"><label>Оформление</label><div class="themesw" role="group" aria-label="Оформление"><button type="button" class="${document.documentElement.dataset.theme!=='light'?'on':''}" data-theme-set="dark">Тёмная</button><button type="button" class="${document.documentElement.dataset.theme==='light'?'on':''}" data-theme-set="light">Светлая</button></div></div>
         <div class="field"><label for="switchco2">Компания</label>${coSwitch('switchco2')}</div><div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn sm" data-act="profile">Изменить имя${isOwner()?' и компанию':''}</button><button class="btn sm" data-act="logout">Выйти</button></div></div>
     </div>
   </div>`;
@@ -647,7 +678,7 @@ function catColor(name){ const i = WAL ? WAL.cats.expense.findIndex(x=>x.name===
 function donut(parts, total){
   const R=70, C=2*Math.PI*R; let off=0;
   const segs = parts.map(p=>{ const len = total? C*p.v/total : 0; const el = `<circle cx="90" cy="90" r="${R}" fill="none" stroke="${p.c}" stroke-width="22" stroke-dasharray="${Math.max(0,len-2)} ${C}" stroke-dashoffset="${-off}" transform="rotate(-90 90 90)"><title>${esc(p.n)}: ${sum(p.v)} сум</title></circle>`; off += len; return el; }).join('');
-  return `<svg viewBox="0 0 180 180" class="donut" aria-hidden="true"><circle cx="90" cy="90" r="${R}" fill="none" stroke="#EEF0F7" stroke-width="22"/>${segs}<text x="90" y="84" text-anchor="middle" class="d-l">расходы</text><text x="90" y="106" text-anchor="middle" class="d-v">${esc(sumC(total))}</text></svg>`;
+  return `<svg viewBox="0 0 180 180" class="donut" aria-hidden="true"><circle cx="90" cy="90" r="${R}" fill="none" stroke="${CV('soft')}" stroke-width="22"/>${segs}<text x="90" y="84" text-anchor="middle" class="d-l">расходы</text><text x="90" y="106" text-anchor="middle" class="d-v">${esc(sumC(total))}</text></svg>`;
 }
 function dailyBars(m, byDay){
   const N = daysIn(m), vals = Array.from({length:N},(_,i)=>byDay[i+1]||0), mx = Math.max(...vals,1);
@@ -657,8 +688,8 @@ function dailyBars(m, byDay){
   const y = v => H-pb-(v/mx)*(H-pb-12);
   const ticks = [0, mx/2, mx];
   return `<svg viewBox="0 0 ${W} ${H}" class="bars" aria-hidden="true">
-    ${ticks.map(t=>`<line x1="${pl}" x2="${W}" y1="${y(t)}" y2="${y(t)}" stroke="#EEF0F7"/><text x="${pl-6}" y="${y(t)+4}" text-anchor="end" class="ax">${esc(sumC(t))}</text>`).join('')}
-    ${vals.map((v,i)=>{ const x=pl+i*bw+bw*.15, h=H-pb-y(v); const cls = isCur && i+1===td ? '#FFC629' : (isCur && i+1>td ? '#E3E7F7' : '#2F55E4'); return `<rect x="${x.toFixed(1)}" y="${y(v).toFixed(1)}" width="${(bw*.7).toFixed(1)}" height="${Math.max(0,h).toFixed(1)}" rx="3" fill="${cls}"><title>${i+1}: ${sum(v)} сум</title></rect>${(i+1)%5===0||i===0?`<text x="${(x+bw*.35).toFixed(1)}" y="${H-6}" text-anchor="middle" class="ax">${i+1}</text>`:''}`; }).join('')}
+    ${ticks.map(t=>`<line x1="${pl}" x2="${W}" y1="${y(t)}" y2="${y(t)}" stroke="${CV('soft')}"/><text x="${pl-6}" y="${y(t)+4}" text-anchor="end" class="ax">${esc(sumC(t))}</text>`).join('')}
+    ${vals.map((v,i)=>{ const x=pl+i*bw+bw*.15, h=H-pb-y(v); const cls = isCur && i+1===td ? '#FFC629' : (isCur && i+1>td ? CV('line') : CV('blue')); return `<rect x="${x.toFixed(1)}" y="${y(v).toFixed(1)}" width="${(bw*.7).toFixed(1)}" height="${Math.max(0,h).toFixed(1)}" rx="3" fill="${cls}"><title>${i+1}: ${sum(v)} сум</title></rect>${(i+1)%5===0||i===0?`<text x="${(x+bw*.35).toFixed(1)}" y="${H-6}" text-anchor="middle" class="ax">${i+1}</text>`:''}`; }).join('')}
     ${avg>0?`<line x1="${pl}" x2="${W}" y1="${y(avg)}" y2="${y(avg)}" stroke="#E0483D" stroke-dasharray="5 4"/><text x="${W-4}" y="${y(avg)-5}" text-anchor="end" class="ax" fill="#E0483D">в среднем ${esc(sumC(avg))}/день</text>`:''}
   </svg>`;
 }
@@ -908,9 +939,10 @@ async function boot(){
 
 /* ---------- события ---------- */
 document.addEventListener('click', e => {
-  const el = e.target.closest('[data-stopser],[data-more],[data-pay],[data-pt],[data-addon],[data-admpay],[data-ext],[data-wk],[data-wcat],[data-wedit],[data-wdel],[data-bud],[data-act],[data-open],[data-tick],[data-plan],[data-pdel],[data-pedit],[data-hedit],[data-hdel],[data-hab],[data-status],[data-close],[data-delete],[data-sw],[data-cf],[data-view],[data-mode]');
+  const el = e.target.closest('[data-theme-set],[data-stopser],[data-more],[data-pay],[data-pt],[data-addon],[data-admpay],[data-ext],[data-wk],[data-wcat],[data-wedit],[data-wdel],[data-bud],[data-act],[data-open],[data-tick],[data-plan],[data-pdel],[data-pedit],[data-hedit],[data-hdel],[data-hab],[data-status],[data-close],[data-delete],[data-sw],[data-cf],[data-view],[data-mode]');
   if(!el) return;
   if(el.dataset.close && e.target !== el && !e.target.closest('button[data-close]')) return;
+  if(el.dataset.themeSet){ document.documentElement.dataset.theme = el.dataset.themeSet; try{ localStorage.setItem('orb-theme', el.dataset.themeSet); }catch(err){} return render(); }
   if(el.dataset.pay) return openPay(el.dataset.pay);
   if(el.dataset.more){ const id=Number(el.dataset.more); return (async()=>{ try { await api('POST',`/api/tasks/${id}/more`); await reload(); render(); openTask(id); toast('Запрос отправлен — руководитель сможет продлить срок'); } catch(err){ toast(err.message); } })(); }
   if(el.dataset.stopser){ if(el.dataset.confirm!=='1'){ el.dataset.confirm='1'; el.textContent='Точно остановить?'; return; } return act(()=>api('DELETE','/api/series/'+el.dataset.stopser),'Повтор остановлен — новые задачи создаваться не будут').then(()=>closeModal()); }
@@ -920,7 +952,7 @@ document.addEventListener('click', e => {
   if(el.dataset.admpay){ const [kind,id,m] = el.dataset.admpay.split('|');
     if(el.dataset.confirm!=='1'){ el.dataset.confirm='1'; el.textContent='Деньги получены?'; return; }
     return (async()=>{ try { if(kind==='company') await api('POST',`/api/admin/company/${id}/paid`,{months:Number(m)}); else await api('POST',`/api/admin/user/${id}/ai`, kind==='pack'?{pack:true}:{months:Number(m)}); ADM=null; ADF=[]; toast('Оплата отмечена'); await reload(); await loadAdmin(); } catch(err){ toast(err.message); } })(); }
-  if(el.dataset.ext){ const [id,code] = el.dataset.ext.split('|'); return (async()=>{ try { const r = await api('POST','/api/tasks/'+id+'/extend',{code}); await reload(); render(); openTask(Number(id)); toast('Срок продлён до '+r.label+' — исполнитель получит уведомление'); } catch(err){ toast(err.message); } })(); }
+  if(el.dataset.ext){ const [id,code] = el.dataset.ext.split('|'); return (async()=>{ try { const r = await api('POST','/api/tasks/'+id+'/extend',{code}); const inModal = !!document.querySelector('#modal .modal'); await reload(); render(); if(inModal) openTask(Number(id)); toast('Срок продлён до '+r.label+' — исполнитель получит уведомление'); } catch(err){ toast(err.message); } })(); }
   if(el.dataset.wk){ WK = el.dataset.wk; WCAT=''; const a=$('w-amount')?.value, n=$('w-note')?.value; render(); if($('w-amount')){ $('w-amount').value=a||''; $('w-note').value=n||''; } return; }
   if(el.dataset.wcat){ WCAT = WCAT===el.dataset.wcat ? '' : el.dataset.wcat; document.querySelectorAll('.wcat').forEach(b=>b.classList.toggle('on', b.dataset.wcat===WCAT)); return; }
   if(el.dataset.wedit) return openWalletEdit(Number(el.dataset.wedit));

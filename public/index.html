@@ -3,10 +3,11 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<script>try{document.documentElement.dataset.theme=localStorage.getItem('orb-theme')||'dark'}catch(e){document.documentElement.dataset.theme='dark'}</script>
 <title>Орбита</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%2317237A'/%3E%3Ccircle cx='16' cy='16' r='5' fill='%23FFD23F'/%3E%3Cellipse cx='16' cy='16' rx='12' ry='5' fill='none' stroke='%23fff' stroke-width='2'/%3E%3C/svg%3E">
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Onest:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Onest:wght@400;500;600;700;800&family=IBM+Plex+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@500;600;700&display=swap">
 <style>
 /* Layout: светлое рабочее приложение в духе Crew — белая боковая панель, лавандовый фон, жёлтая главная плитка, тёмно-синие «живые» панели */
 :root{
@@ -18,6 +19,7 @@
   --ok:#1F9D74; --ok-soft:#E2F5EE; --warn:#D9861A; --warn-soft:#FFF2DC; --bad:#E0483D; --bad-soft:#FDE6E4;
   --f:"Onest", system-ui, -apple-system, "Segoe UI", sans-serif;
   --mono:"JetBrains Mono", ui-monospace, Menlo, monospace;
+  --accent-rgb:47,85,228; --on-accent:#FFFFFF;
   --r:18px; --shadow:0 1px 2px rgba(20,23,41,.04), 0 6px 20px rgba(20,23,41,.05);
 }
 *{box-sizing:border-box}
@@ -208,7 +210,10 @@ button{cursor:pointer}
 .tl-days .d.we b{color:var(--muted)}
 .tl-days .d.today b{background:var(--blue);color:#fff;border-radius:50%;width:22px;height:22px;display:grid;place-items:center;margin:0 auto}
 .lane{position:relative;height:34px;border-top:1px solid var(--line)}
-.lane .bgcol{position:absolute;top:0;bottom:0}
+.lane .bgcol{position:absolute;top:0;bottom:0;background:rgba(238,240,247,.7)}
+html[data-theme="dark"] .lane .bgcol{background:rgba(255,255,255,.035)}
+html[data-theme="dark"] .chat{background:linear-gradient(180deg,#121A33,#0F1528);border:1px solid var(--line)}
+html[data-theme="dark"] .bubble{background:#1A2239;border:1px solid var(--line);box-shadow:none}
 .lane .todayline{position:absolute;top:0;bottom:0;width:2px;background:var(--blue);opacity:.85}
 .tb{position:absolute;top:6px;height:22px;border-radius:7px;border:1.5px solid;font-size:11px;font-weight:600;padding:0 7px;display:flex;align-items:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer;background:var(--surface)}
 .tb.progress{border-color:#6F8BF0;background:#EEF2FF;color:var(--blue-ink)}
@@ -466,6 +471,63 @@ a.btn{text-decoration:none}
 .copyrow{display:flex;gap:8px;align-items:center;background:var(--soft);border-radius:12px;padding:8px 8px 8px 12px}
 .copyrow code{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--mono);font-size:12px}
 @media (max-width:760px){ .auth-card{grid-template-columns:minmax(0,1fr)} .auth-r{min-height:420px} .auth-l{padding:28px 22px} .me-box{display:none} }
+
+/* ================= Тёмная тема «Командный центр» ================= */
+html[data-theme="dark"]{
+  color-scheme:dark;
+  --bg:#0A0F1E; --surface:#141B30; --soft:#1A2239; --ink:#E8ECF8; --muted:#9AA4C2; --line:#232C47;
+  --blue:#F5B43C; --blue-soft:#2A2513; --blue-ink:#FFD27A; --accent-rgb:92,200,255; --on-accent:#1A1300;
+  --navy:#16204A; --navy-2:#0F1528; --navy-ink:#E8ECF8;
+  --yellow:#F5B43C; --yellow-2:#FFD27A; --yellow-ink:#1A1300;
+  --ok:#4ADE80; --ok-soft:#10301F; --warn:#FBBF24; --warn-soft:#33270B; --bad:#FF8A8A; --bad-soft:#3A1A22;
+  --f:"IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --shadow:0 0 0 1px #232C47;
+}
+html[data-theme="dark"] .side{background:#0F1528;border-color:var(--line)}
+html[data-theme="dark"] .ws .logo{background:var(--blue);color:var(--on-accent)}
+html[data-theme="dark"] .nav a[aria-current="page"]{background:#1C2540;color:#FFFFFF}
+html[data-theme="dark"] .eyebrow{color:#7DD3FC}
+html[data-theme="dark"] .btn:hover{border-color:#3A4466}
+html[data-theme="dark"] .btn.primary{color:var(--on-accent);box-shadow:0 6px 18px rgba(245,180,60,.22)}
+html[data-theme="dark"] .btn.primary:hover{background:#FFC555}
+html[data-theme="dark"] .card{border:1px solid var(--line);box-shadow:none}
+html[data-theme="dark"] .kpi .v{font-family:var(--mono);font-weight:700;letter-spacing:-.02em}
+html[data-theme="dark"] .kpi.hero{background:var(--surface);border:1px solid #4A3B17;box-shadow:none}
+html[data-theme="dark"] .kpi.hero .lab{color:var(--muted)}
+html[data-theme="dark"] .kpi.hero .lab .ic,html[data-theme="dark"] .kpi.hero .delta{background:var(--blue);color:var(--on-accent)}
+html[data-theme="dark"] .kpi.hero .v{color:var(--blue)}
+html[data-theme="dark"] .kpi.hero .sub{color:var(--muted)}
+html[data-theme="dark"] .kpi.alarm{border-color:#5C2A33}
+html[data-theme="dark"] .live{background:radial-gradient(120% 140% at 70% 10%,#1E2A5A 0%,#141B30 50%,#0F1528 100%);border:1px solid var(--line);box-shadow:none}
+html[data-theme="dark"] .chips button.on{background:var(--blue);color:var(--on-accent);border-color:var(--blue)}
+html[data-theme="dark"] .tip{background:#1C2540;color:var(--ink)}
+html[data-theme="dark"] .tl-days .d.today b,html[data-theme="dark"] .wdc input:checked+span,html[data-theme="dark"] .wcat.on,html[data-theme="dark"] .stat-row button.sel{color:var(--on-accent)}
+html[data-theme="dark"] .tabs button.on{background:var(--blue);color:var(--on-accent)}
+html[data-theme="dark"] .tb.progress{background:#16264A;border-color:#3D6DB3;color:#BFD6FF}
+html[data-theme="dark"] .tb.review{background:#33270B;border-color:#8A6A1F;color:#FFD27A}
+html[data-theme="dark"] .switch{background:#2B3556}
+html[data-theme="dark"] .switch::after{background:#E8ECF8}
+html[data-theme="dark"] .ck.on{background:#10301F;border-color:#1F5C3A}
+html[data-theme="dark"] .paybar select,html[data-theme="dark"] .extrow input,html[data-theme="dark"] .addon{background:var(--soft)}
+html[data-theme="dark"] .chip.s-late,html[data-theme="dark"] .extbox.late{background:#3A1A22;border-color:#5C2A33}
+html[data-theme="dark"] .toast{background:#1C2540;color:var(--ink);border:1px solid #3A4466}
+html[data-theme="dark"] .payqr img{background:#FFFFFF}
+html[data-theme="dark"] input,html[data-theme="dark"] select,html[data-theme="dark"] textarea{color-scheme:dark}
+html[data-theme="dark"] .modal{background:var(--surface);border:1px solid var(--line)}
+/* командный центр: лента и решения */
+.feed-row{display:flex;gap:12px;padding:9px 0;border-top:1px solid var(--line);font-size:13.5px;align-items:flex-start}
+.feed-row:first-child{border-top:0}
+.feed-row time{font-family:var(--mono);font-size:11.5px;color:var(--muted);width:46px;flex:none;padding-top:2px}
+.feed-row.bad span{color:var(--bad)}
+.live-dot{font-family:var(--mono);font-size:11.5px;color:var(--ok);font-weight:700}
+.dec{border:1px solid var(--line);background:var(--soft);border-radius:14px;padding:12px 14px;margin-top:10px}
+.dec.hot{border-color:color-mix(in srgb,var(--bad) 40%,var(--line))}
+.dec b{display:block;font-size:14px}
+.dec small{display:block;color:var(--muted);font-size:12.5px;margin:2px 0 10px}
+.dec .acts{display:flex;gap:6px;flex-wrap:wrap}
+.themesw{display:flex;background:var(--soft);border-radius:12px;padding:3px;gap:2px;margin:10px 0}
+.themesw button{flex:1;border:0;background:transparent;border-radius:9px;padding:7px 10px;font-weight:700;font-size:12.5px;color:var(--muted)}
+.themesw button.on{background:var(--surface);color:var(--ink);box-shadow:var(--shadow)}
 </style>
 </head>
 <body>
