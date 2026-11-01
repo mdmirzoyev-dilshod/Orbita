@@ -85,7 +85,7 @@ app.get('/auth/tg', wrap(async (req, res) => {
 // Вход без Telegram — только для проверки (DEV_LOGIN=1)
 app.post('/api/auth/dev', wrap(async (req, res) => {
   if (process.env.DEV_LOGIN !== '1') return res.status(404).end();
-  const tgId = Number(req.body.tg_id) || Math.floor(Math.random() * 1e9);
+  const tgId = -Math.floor(Math.random() * 1e9);   // всегда новый тестовый пользователь — войти в чужой аккаунт нельзя
   const u = await tg.upsertUser({ id: tgId, first_name: clean(req.body.name, 60) || 'Тест' });
   await startSession(res, u.id, req);
   res.json({ ok: true });
