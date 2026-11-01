@@ -5,7 +5,7 @@ const { today, fmtDue } = require('./time');
 const TOKEN = process.env.BOT_TOKEN || '';
 const API = `https://api.telegram.org/bot${TOKEN}`;
 let BOT_USERNAME = process.env.BOT_USERNAME || '';
-const handlers = { done: null, extend: null, transcribe: null, reply: null, assist: null, callback: null, aiGate: null, aiUsage: null, feature: null };   // заполняются logic.js и assistant.js
+const handlers = { done: null, extend: null, transcribe: null, reply: null, assist: null, callback: null, aiGate: null, aiUsage: null, feature: null, photo: null };   // заполняются logic.js и assistant.js
 
 const appUrl = () => process.env.APP_URL || (process.env.RAILWAY_PUBLIC_DOMAIN ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}` : '');
 const enabled = () => Boolean(TOKEN);
@@ -32,18 +32,30 @@ function openButton(path = '') {
 async function send(chatId, text, opts = {}) {
   if (!chatId || !TOKEN) return null;
   const rows = [];
-  if (opts.doneTaskId) rows.push([{ text: '✅ Выполнено', callback_data: `done:${opts.doneTaskId}` }]);
+  if (opts.doneTaskId) {
+    rows.push(opts.accepted ? [{ text: '✅ Сделал', callback_data: `done:${opts.doneTaskId}` }] : [{ text: '👍 Принял', callback_data: `acc:${opts.doneTaskId}` }, { text: '✅ Сделал', callback_data: `done:${opts.doneTaskId}` }]);
+    rows.push([{ text: '⏳ Нужно больше времени', callback_data: `more:${opts.doneTaskId}` }]);
+  }
+  if (opts.checklist && opts.checklist.length) rows.push(...checkRows(opts.checklistTaskId || opts.doneTaskId || opts.taskId, opts.checklist));
   if (opts.buttons) rows.push(...opts.buttons);
   const ob = openButton(opts.path);
   if (ob && opts.open !== false) rows.push(ob);
-  const r = await call('sendMessage', { chat_id: chatId, text, disable_web_page_preview: true, reply_markup: rows.length ? { inline_keyboard: rows } : undefined });
+  const markup = rows.length ? { inline_keyboard: rows } : undefined;
+  const r = opts.photo
+    ? await call('sendPhoto', { chat_id: chatId, photo: opts.photo, caption: text.slice(0, 1000), reply_markup: markup })
+    : await call('sendMessage', { chat_id: chatId, text, disable_web_page_preview: true, reply_markup: markup });
   // запоминаем, к какой задаче относится сообщение — чтобы ответ на него стал комментарием
   const taskId = opts.taskId || opts.doneTaskId;
   if (taskId && r && r.ok) await db.q(`INSERT INTO tg_msgs (chat_id, message_id, task_id) VALUES ($1,$2,$3) ON CONFLICT (chat_id, message_id) DO UPDATE SET task_id=EXCLUDED.task_id`, [chatId, r.result.message_id, taskId]).catch(() => {});
   return r;
 }
 
-// скачать файл (голосовое) из Telegram
+// кнопки чек-листа: ☐/☑ пункт (до 10 пунктов)
+function checkRows(taskId, list) {
+  return (list || []).slice(0, 10).map((c, i) => [{ text: `${c.d ? '☑️' : '⬜'} ${c.t}`.slice(0, 60), callback_data: `ck:${taskId}:${i}` }]);
+}
+
+// скачать файл (голосовое, фото) из Telegram
 async function download(fileId) {
   const f = await call('getFile', { file_id: fileId });
   if (!f || !f.ok) throw new Error('не удалось получить файл');
@@ -65,6 +77,14 @@ async function onMessage(m) {
   const chat = m.chat.id;
   if (m.chat.type !== 'private') return;
   const user = await upsertUser(m.from);
+
+  // фото (фото-отчёт): ответом на сообщение о задаче
+  const photo = (m.photo && m.photo.length && m.photo[m.photo.length - 1].file_id) || (m.document && /^image\//.test(m.document.mime_type || '') && m.document.file_id);
+  if (photo) {
+    const link = m.reply_to_message && await db.one(`SELECT task_id FROM tg_msgs WHERE chat_id=$1 AND message_id=$2`, [chat, m.reply_to_message.message_id]);
+    if (link && link.task_id && handlers.photo) return handlers.photo({ chat, user, taskId: link.task_id, fileId: photo, caption: (m.caption || '').trim() });
+    return send(chat, '📷 Чтобы прикрепить фото к задаче, ответьте фотографией на сообщение бота об этой задаче (свайп влево по сообщению → «Ответить»).', { open: false });
+  }
 
   // голосовое → текст (ИИ)
   let voice = false;
@@ -103,7 +123,7 @@ async function onMessage(m) {
     const head = confirmed
       ? `✅ Вход подтверждён, ${user.name}!\n\nВернитесь в браузер — страница откроется сама. Если не открылась, нажмите кнопку ниже.`
       : `Здравствуйте, ${user.name}! Это бот «Орбиты» — задачи и личные планы команды.\n\nНажмите кнопку ниже, чтобы войти на сайт (кнопка действует 15 минут).`;
-    return call('sendMessage', { chat_id: chat, text: head + `\n\nСюда будут приходить задачи, напоминания и итоги дня.\nКоманды: /tasks — мои задачи, /plan — план на сегодня, /wallet — кошелёк, /login — войти на сайт\n\n👛 Расход: «45000 такси», доход: «+5 000 000 зарплата»\n🎙 Можно голосом: «Мадине до завтра 15:00 подготовить отчёт», «потратил 120 тысяч на продукты»\n↩️ Ответ на сообщение о задаче станет комментарием`, reply_markup: rows.length ? { inline_keyboard: rows } : undefined });
+    return call('sendMessage', { chat_id: chat, text: head + `\n\nСюда будут приходить задачи, напоминания и итоги дня.\nКоманды: /tasks — мои задачи, /plan — план на сегодня, /wallet — кошелёк, /login — войти на сайт\n\n👛 Расход: «45000 такси», доход: «+5 000 000 зарплата»\n🎙 Можно голосом: «Мадине до завтра 15:00 подготовить отчёт», «потратил 120 тысяч на продукты»\n↩️ Ответ на сообщение о задаче станет комментарием, фото — фото-отчётом`, reply_markup: rows.length ? { inline_keyboard: rows } : undefined });
   }
 
   // Кошелёк: «45000 такси» — записать расход, «+5 000 000 зарплата» — доход
@@ -165,14 +185,26 @@ async function onCallback(cq) {
     if (cq.message && !r.error) await call('editMessageReplyMarkup', { chat_id: cq.message.chat.id, message_id: cq.message.message_id, reply_markup: { inline_keyboard: [[{ text: `⏱ Продлено до ${r.label}`, callback_data: 'noop' }]] } });
     return;
   }
-  if (data.startsWith('done:')) {
-    const taskId = Number(data.slice(5));
+  const tm = data.match(/^(acc|done|more|ck):(\d+)(?::(\d+))?$/);
+  if (tm) {
+    const [, act, idS, ix] = tm, taskId = Number(idS);
     const user = await db.one(`SELECT * FROM users WHERE tg_id=$1`, [cq.from.id]);
-    const t = user && await db.one(`SELECT t.* FROM tasks t JOIN members m ON m.id=t.assignee_id WHERE t.id=$1 AND m.user_id=$2`, [taskId, user.id]);
-    if (!t) return call('answerCallbackQuery', { callback_query_id: cq.id, text: 'Задача не найдена или назначена не вам' });
-    if (t.status !== 'done' && handlers.done) await handlers.done(t.id, t.assignee_id);
-    await call('answerCallbackQuery', { callback_query_id: cq.id, text: 'Отмечено: выполнено ✅' });
-    if (cq.message) await call('editMessageReplyMarkup', { chat_id: cq.message.chat.id, message_id: cq.message.message_id, reply_markup: { inline_keyboard: [[{ text: '✅ Выполнено', callback_data: 'noop' }]] } });
+    const answer = (text, alert) => call('answerCallbackQuery', { callback_query_id: cq.id, text, show_alert: Boolean(alert) });
+    if (!user) return answer('Сначала нажмите /start');
+    const h = { acc: handlers.acc, done: handlers.doneBtn, more: handlers.more, ck: handlers.check }[act];
+    const r = h ? await h(taskId, user.id, Number(ix)) : { error: 'Недоступно' };
+    if (r.error) return answer(r.error, true);
+    const t = await db.one(`SELECT * FROM tasks WHERE id=$1`, [taskId]);
+    const keyboard = () => t.status === 'done' ? [[{ text: '✅ Выполнено', callback_data: 'noop' }]]
+      : [...(t.status === 'new' ? [[{ text: '👍 Принял', callback_data: `acc:${t.id}` }, { text: '✅ Сделал', callback_data: `done:${t.id}` }]] : [[{ text: '✅ Сделал', callback_data: `done:${t.id}` }]]),
+         [{ text: t.more_asked ? '⏳ Запрос отправлен' : '⏳ Нужно больше времени', callback_data: `more:${t.id}` }], ...checkRows(t.id, t.checklist)];
+    if (act === 'more') await db.q(`UPDATE tasks SET more_asked=true WHERE id=$1`, [t.id]), t.more_asked = true;
+    if (act === 'done' && r.needPhoto) {
+      await answer('Нужен фото-отчёт 📸');
+      return send(cq.message.chat.id, `📸 По задаче «${t.title}» нужен фото-отчёт.\n\nОтветьте на это сообщение фотографией — задача закроется автоматически.`, { open: false, taskId: t.id });
+    }
+    await answer(act === 'acc' ? 'Принято в работу 👍' : act === 'done' ? 'Отмечено: выполнено ✅' : act === 'more' ? 'Запрос отправлен руководителю ⏳' : 'Отмечено');
+    if (cq.message) await call('editMessageReplyMarkup', { chat_id: cq.message.chat.id, message_id: cq.message.message_id, reply_markup: { inline_keyboard: keyboard() } });
     return;
   }
   return call('answerCallbackQuery', { callback_query_id: cq.id });
@@ -207,4 +239,4 @@ async function poll() {
 }
 function stop() { running = false; }
 
-module.exports = { call, download, send, poll, stop, enabled, botUsername, appUrl, handlers, upsertUser, onMessage, onCallback };
+module.exports = { checkRows, call, download, send, poll, stop, enabled, botUsername, appUrl, handlers, upsertUser, onMessage, onCallback };

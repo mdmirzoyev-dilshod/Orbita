@@ -12,6 +12,7 @@ const UNIT_UZS = Number(process.env.PRICE_UZS || 12000);   // сколько с�
 const PRICE = { worker: 1, plans: 1, wallet: 1, solo: 2, pack: 1 };
 const LIMITS = { trial: { min: 30, msgs: 300 }, solo: { min: 60, msgs: 500 }, lead: { min: 60, msgs: 500 }, worker: { min: 20, msgs: 150 } };
 const TRIAL_DAYS = 30, PACK_MIN = 60;
+const TIER = { full: 25, free: 100, extraRate: 0.5 };   // потолок цены для больших команд
 const ADMIN_ROLES = ['owner', 'founder', 'director'];
 const month = () => today().slice(0, 7);
 const dayOf = v => (v instanceof Date ? new Date(v.getTime() + 5 * 3600e3).toISOString().slice(0, 10) : String(v || '').slice(0, 10));
@@ -24,11 +25,17 @@ async function companyInfo(companyId) {
   const workers = rows.filter(r => !r.demo && !ADMIN_ROLES.includes(r.role));
   const t0 = today(), trialUntil = addDays(dayOf(co.created_at), TRIAL_DAYS);
   const inTrial = t0 < trialUntil, paid = Boolean(co.paid_until) && co.paid_until >= t0;
-  const nPlans = workers.filter(w => w.plans_on).length, nWallet = workers.filter(w => w.wallet_on).length;
-  const units = workers.length * PRICE.worker + nPlans * PRICE.plans + nWallet * PRICE.wallet;
+  // работник 12 000: задачи, бот, ИИ, «Мои планы», «Кошелёк». 26–100 работников — бесплатно (потолок), с 101-го — по половине цены
+  const n = workers.length, paidFull = Math.min(n, TIER.full), extra = Math.max(0, n - TIER.free);
+  const units = paidFull * PRICE.worker + extra * PRICE.worker * TIER.extraRate;
+  const nPlans = n, nWallet = n;
   return { id: co.id, name: co.name, trialUntil, inTrial, paidUntil: co.paid_until || null, paid, active: inTrial || paid,
     workers: workers.length, plans: nPlans, wallet: nWallet, units, sum: uzs(units),
-    lines: [['Работники', workers.length, PRICE.worker], ['«Мои планы»', nPlans, PRICE.plans], ['«Кошелёк»', nWallet, PRICE.wallet]].filter(l => l[1]).map(([name, n, p]) => ({ name, n, price: uzs(p), total: uzs(n * p) })) };
+    lines: [
+      paidFull && { name: `Работники 1–${TIER.full}`, n: paidFull, price: uzs(PRICE.worker), total: uzs(paidFull * PRICE.worker) },
+      n > TIER.full && { name: `Работники ${TIER.full + 1}–${TIER.free} — бесплатно`, n: Math.min(n, TIER.free) - TIER.full, price: 0, total: 0 },
+      extra && { name: `Работники от ${TIER.free + 1}`, n: extra, price: uzs(PRICE.worker * TIER.extraRate), total: uzs(extra * PRICE.worker * TIER.extraRate) },
+    ].filter(Boolean) };
 }
 
 async function memberships(userId) {
@@ -36,7 +43,9 @@ async function memberships(userId) {
 }
 
 // доступ к «Моим планам» / «Кошельку»: руководителям и одиночкам — всегда, работнику — если подключено (или пробный период компании)
+// «Мои планы» и «Кошелёк» теперь входят в базовый тариф и доступны всем (без ИИ они почти ничего не стоят)
 async function hasFeature(userId, feature) {
+  return true;
   const ms = await memberships(userId);
   if (!ms.length || ms.some(m => ADMIN_ROLES.includes(m.role))) return true;
   for (const m of ms) {
@@ -141,4 +150,4 @@ async function applyPayment({ kind, companyId, userId, months = 1, amount = 0, b
   return { until };
 }
 
-module.exports = { extendDate, applyPayment, UNIT_UZS, PRICE, LIMITS, TRIAL_DAYS, PACK_MIN, uzs, companyInfo, hasFeature, aiAccess, aiGate, addUsage, isPlatformAdmin, trialReminders };
+module.exports = { TIER, extendDate, applyPayment, UNIT_UZS, PRICE, LIMITS, TRIAL_DAYS, PACK_MIN, uzs, companyInfo, hasFeature, aiAccess, aiGate, addUsage, isPlatformAdmin, trialReminders };

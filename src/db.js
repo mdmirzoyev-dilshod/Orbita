@@ -216,6 +216,25 @@ CREATE TABLE IF NOT EXISTS payments (
   by_user     INT REFERENCES users(id) ON DELETE SET NULL,
   at          TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+CREATE TABLE IF NOT EXISTS task_series (
+  id             SERIAL PRIMARY KEY,
+  company_id     INT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+  author_id      INT REFERENCES members(id) ON DELETE SET NULL,
+  assignee_id    INT NOT NULL REFERENCES members(id) ON DELETE CASCADE,
+  title          TEXT NOT NULL,
+  descr          TEXT NOT NULL DEFAULT '',
+  priority       TEXT NOT NULL DEFAULT 'medium',
+  due_time       TEXT,
+  requires_photo BOOLEAN NOT NULL DEFAULT false,
+  checklist      JSONB NOT NULL DEFAULT '[]',
+  repeat         TEXT NOT NULL,
+  wdays          TEXT NOT NULL DEFAULT '12345',
+  mday           INT,
+  start_on       DATE NOT NULL,
+  last_on        DATE,
+  active         BOOLEAN NOT NULL DEFAULT true,
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 CREATE TABLE IF NOT EXISTS wallet_budgets (
   user_id     INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   category    TEXT NOT NULL,
@@ -247,11 +266,12 @@ async function migrate() {
   await q(`DELETE FROM habits h USING habits h2 WHERE h.user_id = h2.user_id AND lower(h.name) = lower(h2.name) AND h.id > h2.id`);
   await q(`DELETE FROM plan_items p USING plan_items p2 WHERE p.user_id = p2.user_id AND p.day = p2.day AND p.text = p2.text
            AND p.time IS NOT DISTINCT FROM p2.time AND p.id > p2.id`);
-  for (const col of ["due_time TEXT", "overdue_sent BOOLEAN NOT NULL DEFAULT false", "extended INT NOT NULL DEFAULT 0"])
+  for (const col of ["due_time TEXT", "overdue_sent BOOLEAN NOT NULL DEFAULT false", "extended INT NOT NULL DEFAULT 0", "requires_photo BOOLEAN NOT NULL DEFAULT false", "checklist JSONB NOT NULL DEFAULT '[]'", "series_id INT", "more_asked BOOLEAN NOT NULL DEFAULT false"])
     await q(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS ${col}`);
   for (const col of ["ai_trial_start DATE", "ai_paid_until DATE", "ai_trial_notified BOOLEAN NOT NULL DEFAULT false"]) await q(`ALTER TABLE users ADD COLUMN IF NOT EXISTS ${col}`);
   for (const col of ["plans_on BOOLEAN NOT NULL DEFAULT false", "wallet_on BOOLEAN NOT NULL DEFAULT false"]) await q(`ALTER TABLE members ADD COLUMN IF NOT EXISTS ${col}`);
   await q(`ALTER TABLE companies ADD COLUMN IF NOT EXISTS paid_until DATE`);
+  await q(`ALTER TABLE comments ADD COLUMN IF NOT EXISTS file_id TEXT`);
   await q(`ALTER TABLE users ADD COLUMN IF NOT EXISTS demo BOOLEAN NOT NULL DEFAULT false`);
   await q(`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS back_token TEXT`);
   await q(`ALTER TABLE members DROP CONSTRAINT IF EXISTS members_role_check`);

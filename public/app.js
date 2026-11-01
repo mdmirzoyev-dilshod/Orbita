@@ -61,6 +61,7 @@ const ROLES = [['worker','Сотрудник'],['manager','Руководите�
 const roleName = u => u.level==='owner' ? 'Владелец' : (ROLES.find(r=>r[0]===u.level)||['',''])[1];
 const roleSelect = (id, sel) => `<select id="${id}">${ROLES.map(([v,l])=>`<option value="${v}" ${v===sel?'selected':''}>${l}</option>`).join('')}</select>`;
 const bossOptions = (except, sel) => S.users.filter(x=>x.role==='manager' && x.id!==except).map(x=>`<option value="${x.id}" ${x.id===sel?'selected':''}>${esc(x.name)}${x.title?' — '+esc(x.title):''}</option>`).join('');
+const REPEAT_RU = {daily:'каждый день', weekdays:'по будням', days:'по дням недели', monthly:'каждый месяц'};
 const nowHM = () => { const d = new Date(); return String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0'); };
 const late = t => t.status!=='done' && t.due && (t.due < TODAY || (t.due===TODAY && t.dueTime && nowHM() >= t.dueTime));
 const dueText = t => (t.due===TODAY?'сегодня':fmt(t.due)) + (t.dueTime?' до '+t.dueTime:'');
@@ -259,8 +260,34 @@ function vOverview(){
       ${rows?`<div class="scroll"><table class="tbl"><thead><tr><th>Сотрудник</th><th class="hide-s">Отдел</th><th class="n">В работе</th><th class="n">Просрочено</th><th>План дня</th></tr></thead><tbody>${rows}</tbody></table></div>`:'<div class="empty">Здесь появятся ваши сотрудники</div>'}</div>
     <div class="card"><div class="card-h"><div><h3>Требует внимания</h3><p>Просрочено и срок сегодня</p></div><span class="pill bad num">${attention.length}</span></div>
       <div>${attention.length ? attention.map(taskRow).join('') : '<div class="empty">Просрочек и задач на сегодня нет</div>'}</div></div>
-  </div>`;
+  </div>
+  <div class="grid low-grid">${disciplineCard()}<div class="card"><div class="card-h"><div><h3>Повторяющиеся задачи</h3><p>Создаются сами в нужные дни</p></div></div>${seriesList()}</div></div>`;
 }
+function seriesList(){
+  const seen = new Map(); S.tasks.filter(t=>t.series && t.series.active).forEach(t=>{ if(!seen.has(t.series.id) || seen.get(t.series.id).due < t.due) seen.set(t.series.id, t); });
+  const arr = [...seen.values()];
+  return arr.length ? arr.map(t=>`<div class="wrow" data-open="${t.id}" role="button" tabindex="0"><span class="wc-ic" style="background:var(--blue-soft)">🔁</span><div style="flex:1;min-width:0"><b>${esc(t.title)}</b><small>${esc(U(t.assignee).name)} · ${esc(REPEAT_RU[t.series.repeat]||'')}${t.dueTime?' · до '+t.dueTime:''}</small></div></div>`).join('')
+    : '<div class="empty">Нет. При создании задачи выберите «Повторять: каждый день» — например, открытие точки или ежедневный отчёт.</div>';
+}
+
+/* ---------- дисциплина: выполнено вовремя за 30 дней ---------- */
+function discipline(uid){
+  const from = addDays(TODAY,-30);
+  const ts = S.tasks.filter(t=>t.assignee===uid && t.due>=from && t.due<=TODAY && t.author!==t.assignee);
+  const onTime = ts.filter(t=>t.status==='done' && t.doneAt && t.doneAt<=t.due).length;
+  const lateDone = ts.filter(t=>t.status==='done' && t.doneAt && t.doneAt>t.due).length;
+  const over = ts.filter(late).length;
+  const total = onTime+lateDone+over;
+  return {onTime, lateDone, over, total, pct: total ? Math.round(onTime/total*100) : null};
+}
+function disciplineCard(){
+  const list = scope().filter(u=>u.id!==S.me).map(u=>({u, d:discipline(u.id)})).filter(x=>x.d.total).sort((a,b)=>b.d.pct-a.d.pct || b.d.total-a.d.total);
+  return `<div class="card"><div class="card-h"><div><h3>Дисциплина по задачам</h3><p>Выполнено вовремя · последние 30 дней</p></div></div>
+    ${list.length ? list.map(({u,d},i)=>`<div class="drow"><span class="dpos num">${i+1}</span>${av(u,28)}<div class="dmain"><div class="dtop"><b>${esc(u.name)}</b><span class="num" style="color:${d.pct>=80?'var(--ok)':d.pct>=50?'var(--warn)':'var(--bad)'};font-weight:800">${d.pct}%</span></div>
+      <div class="bar"><i style="width:${d.pct}%;background:${d.pct>=80?'var(--ok)':d.pct>=50?'var(--warn)':'var(--bad)'}"></i></div><small>${d.onTime} вовремя · ${d.lateDone} с опозданием · ${d.over} просрочено</small></div></div>`).join('')
+      : '<div class="empty">Появится, когда у сотрудников будут задачи со сроком</div>'}</div>`;
+}
+
 function orgChart(){
   const sc = scope();
   const top = sc.filter(u=>!sc.some(x=>x.id===u.boss));
@@ -482,8 +509,7 @@ function vTeam(){
     return `<div class="card tc"><div class="person">${av(u,42)}<div><b>${esc(u.name)}</b><small>${esc(u.title||roleName(u))} · ${esc(u.dept)}</small>${u.title&&roleName(u)?`<small>Роль: ${esc(roleName(u))}</small>`:''}${boss?`<small>Руководитель: ${esc(boss)}</small>`:''}</div></div>
       ${vis(u.id)?`<div class="stats"><div><b class="num">${a}</b><small>в работе</small></div><div><b class="num" style="color:${od?'var(--bad)':'inherit'}">${od}</b><small>просрочено</small></div><div><b class="num">${dn}</b><small>готово</small></div></div>
       <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--muted);margin-bottom:6px"><span>План дня</span><span class="num" style="color:var(--ink);font-weight:700">${p==null?'—':p+'%'}</span></div>
-      <div class="bar"><i style="width:${p||0}%"></i></div>`:'<p class="note">Задачи этого сотрудника видит его руководитель.</p>'}
-      ${isOwner() && !u.admin && !u.demo ? `<div class="addons"><span>Подключено:</span><button class="addon on" disabled title="Задачи и бот — входят всегда">✓ Задачи</button><button class="addon ${u.plansOn?'on':''}" data-addon="${u.id}|plansOn">${u.plansOn?'✓ ':'+ '}Мои планы</button><button class="addon ${u.walletOn?'on':''}" data-addon="${u.id}|walletOn">${u.walletOn?'✓ ':'+ '}Кошелёк</button></div>` : ''}
+      <div class="bar"><i style="width:${p||0}%"></i></div>${(()=>{ const d=discipline(u.id); return d.total&&u.id!==S.me?`<div style="display:flex;justify-content:space-between;font-size:12px;color:var(--muted);margin:10px 0 0"><span>Дисциплина · 30 дней</span><span class="num" style="font-weight:700;color:${d.pct>=80?'var(--ok)':d.pct>=50?'var(--warn)':'var(--bad)'}">${d.pct}%</span></div>`:''; })()}`:'<p class="note">Задачи этого сотрудника видит его руководитель.</p>'}
       <div style="display:flex;justify-content:space-between;align-items:center;margin-top:14px;gap:8px;flex-wrap:wrap">${u.demo?'<span class="chip s-review">Демо</span>':`<span class="chip ${u.tg?'s-progress':'s-new'}">${u.tg?'Telegram подключён':'Уведомления выключены'}</span>`}
       <span style="display:flex;gap:6px;flex-wrap:wrap">${u.demo&&isOwner()?`<button class="btn sm primary" data-act="viewas" data-id="${u.id}">Войти как</button>`:''}${isOwner()&&u.id!==S.me?`<button class="btn sm" data-act="editm" data-id="${u.id}">Изменить</button>`:''}${vis(u.id)&&u.id!==S.me&&isMgr()?`<button class="btn sm" data-act="new" data-for="${u.id}">${ICON.plus}Задача</button>`:''}</span></div></div>`; }).join('')}</div>`;
 }
@@ -536,8 +562,8 @@ function billingCard(){
     <div class="bill-grid">
       <div class="bill-lines">${c.lines.length ? c.lines.map(l=>`<div><span>${esc(l.name)} × ${l.n}</span><span class="num">${money(l.total)}</span></div>`).join('') : '<div class="note">Работников пока нет — счёт 0 сум. Пригласите сотрудников, чтобы ставить им задачи.</div>'}
         <div class="bill-total"><span>Итого в месяц</span><b class="num">${money(c.sum)}</b></div></div>
-      <div class="bill-info"><div>👤 Работник — <b>${money(12000)}</b>: задачи, бот, ИИ-помощник (20 мин голоса)</div><div>🗓 «Мои планы» — <b>+${money(12000)}</b></div><div>👛 «Кошелёк» — <b>+${money(12000)}</b></div>
-        <div class="note">${c.inTrial ? 'В пробный период всё включено для всех. ' : ''}${!c.active ? 'Пока счёт не оплачен, у работников отключены ИИ, «Мои планы» и «Кошелёк» — задачи работают. ' : ''}</div>
+      <div class="bill-info"><div>👤 Работник — <b>${money(12000)}</b> в месяц: задачи, бот, ИИ-помощник (20 мин голоса), «Мои планы», «Кошелёк»</div><div>🎁 С 26-го по 100-й работник — <b>бесплатно</b></div><div>➕ С 101-го — <b>${money(6000)}</b></div>
+        <div class="note">${c.inTrial ? 'В пробный период всё включено для всех. ' : ''}${!c.active ? 'Пока счёт не оплачен, у работников отключён ИИ-помощник — всё остальное работает. ' : ''}</div>
         ${c.sum ? `<div class="paybar"><select id="pay-months" aria-label="Срок оплаты">${[[1,'1 месяц'],[3,'3 месяца'],[6,'6 месяцев'],[12,'12 месяцев']].map(([v,l])=>`<option value="${v}">${l} — ${money(c.sum*v)}</option>`).join('')}</select><button class="btn primary sm" data-pay="company">Оплатить по QR</button></div>` : ''}</div>
     </div></div>`;
 }
@@ -590,10 +616,10 @@ function vAdmin(){
     <div class="card kpi"><div class="lab"><span class="ic">${ICON.flame}</span>ИИ у одиночек</div><div class="row"><div><div class="v num">${ADM.users.filter(u=>u.src==='solo').length}</div><div class="sub">оплачено · ${ADM.users.filter(u=>u.src==='trial').length} на пробном</div></div></div></div>
   </div>
   <div class="card" style="margin-top:16px"><div class="card-h"><div><h3>Компании</h3><p>Отметьте оплату после получения денег — срок продлится от текущей даты окончания</p></div></div>
-    <div class="tblw"><table class="tbl"><thead><tr><th>Компания</th><th>Владелец</th><th class="n">Работн.</th><th class="n">Планы</th><th class="n">Кошел.</th><th class="n">Счёт / мес</th><th>Статус</th><th></th></tr></thead><tbody>
-    ${ADM.companies.map(c=>`<tr><td><b>${esc(c.name)}</b></td><td>${esc(c.owner||'—')}${c.ownerUsername?` <a href="https://t.me/${esc(c.ownerUsername)}" target="_blank" rel="noopener">@${esc(c.ownerUsername)}</a>`:''}</td><td class="n num">${c.workers}</td><td class="n num">${c.plans}</td><td class="n num">${c.wallet}</td><td class="n num"><b>${sum(c.sum)}</b></td>
+    <div class="tblw"><table class="tbl"><thead><tr><th>Компания</th><th>Владелец</th><th class="n">Работников</th><th class="n">Счёт / мес</th><th>Статус</th><th></th></tr></thead><tbody>
+    ${ADM.companies.map(c=>`<tr><td><b>${esc(c.name)}</b></td><td>${esc(c.owner||'—')}${c.ownerUsername?` <a href="https://t.me/${esc(c.ownerUsername)}" target="_blank" rel="noopener">@${esc(c.ownerUsername)}</a>`:''}</td><td class="n num">${c.workers}</td><td class="n num"><b>${sum(c.sum)}</b></td>
       <td>${c.paid?`<span class="chip s-done">до ${fmt(c.paidUntil)}</span>`:c.inTrial?`<span class="chip s-progress">пробный до ${fmt(c.trialUntil)}</span>`:'<span class="chip s-late">не оплачено</span>'}</td>
-      <td><button class="btn sm" data-admpay="company|${c.id}|1">+1 мес</button> <button class="btn sm" data-admpay="company|${c.id}|12">+год</button></td></tr>`).join('') || '<tr><td colspan="8" class="note">Компаний пока нет</td></tr>'}</tbody></table></div></div>
+      <td><button class="btn sm" data-admpay="company|${c.id}|1">+1 мес</button> <button class="btn sm" data-admpay="company|${c.id}|12">+год</button></td></tr>`).join('') || '<tr><td colspan="6" class="note">Компаний пока нет</td></tr>'}</tbody></table></div></div>
   <div class="grid low-grid">
     <div class="card"><div class="card-h"><div><h3>ИИ-помощник у пользователей</h3><p>${money(ADM.price.solo)} / мес · пакет +60 мин — ${money(ADM.price.pack)}</p></div></div>
       <form class="add" id="adm-find" style="margin-bottom:10px"><input id="adm-q" value="${esc(ADQ)}" placeholder="Найти по имени или @username" autocomplete="off"><button class="btn" type="submit">Найти</button></form>
@@ -724,9 +750,13 @@ function openNew(forUser){
     <div class="field"><label for="n-desc">Подробности</label><textarea id="n-desc" placeholder="Необязательно"></textarea></div>
     <div class="frow"><div class="field"><label for="n-who">Исполнитель</label><select id="n-who" required>${mgr&&!forUser?'<option value="" disabled selected>Выберите</option>':''}${opts}</select></div>
     <div class="field"><label for="n-prio">Приоритет</label><select id="n-prio"><option value="high">Высокий</option><option value="medium" selected>Средний</option><option value="low">Низкий</option></select></div></div>
-    <div class="frow"><div class="field"><label for="n-due">Срок</label><input type="date" id="n-due" value="${addDays(TODAY,1)}" required></div>
+    <div class="frow"><div class="field"><label for="n-due" id="n-due-l">Срок</label><input type="date" id="n-due" value="${addDays(TODAY,1)}" required></div>
     <div class="field"><label for="n-due-time">До какого времени</label><input type="time" id="n-due-time"><small class="note">Пусто — до конца дня</small></div></div>
-    <div class="field"><label for="n-rem">Напомнить в Telegram</label><input type="datetime-local" id="n-rem"></div>
+    <div class="frow"><div class="field"><label for="n-rep">Повторять</label><select id="n-rep"><option value="">Не повторять</option><option value="daily">Каждый день</option><option value="weekdays">По будням (Пн–Пт)</option><option value="days">По дням недели</option><option value="monthly">Каждый месяц (в число срока)</option></select></div>
+    <div class="field"><label for="n-rem">Напомнить в Telegram</label><input type="datetime-local" id="n-rem"></div></div>
+    <div class="field" id="n-days-f" hidden><label>Дни недели</label><div class="wdchips">${WD_ORDER.map(d=>`<label class="wdc"><input type="checkbox" name="n-wd" value="${d}" ${d>=1&&d<=5?'checked':''}><span>${WD[d]}</span></label>`).join('')}</div></div>
+    <div class="field"><label for="n-check">Чек-лист <span class="note">(необязательно, каждый пункт с новой строки)</span></label><textarea id="n-check" rows="3" placeholder="Открыть кассу&#10;Проверить остатки&#10;Отправить отчёт"></textarea></div>
+    <div class="opts"><label class="opt"><input type="checkbox" id="n-photo"><span>📸 Нужен фото-отчёт о выполнении</span></label></div>
     <div class="mact"><button type="button" class="btn" data-close="1">Отмена</button><button class="btn primary" type="submit">${mgr?'Поставить и уведомить':'Добавить'}</button></div>
   </form>`);
   setTimeout(()=>$('n-title').focus(),30);
@@ -738,12 +768,16 @@ function openTask(id){
     <div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start"><h2 style="margin:0 0 6px">${esc(t.title)}</h2>${statusChip(t)}</div>
     ${t.desc?`<p style="margin:0 0 12px;color:var(--muted);white-space:pre-line">${esc(t.desc)}</p>`:''}
     <dl class="dl"><dt>Исполнитель</dt><dd>${esc(a.name)}${a.title?' · '+esc(a.title):''}</dd><dt>Поставил</dt><dd>${esc(au.name)}</dd><dt>Срок</dt><dd${late(t)?' style="color:var(--bad);font-weight:700"':''}>${dueText(t)}${t.ext?` <span class="note">· продлевали ${t.ext} раз</span>`:''}</dd><dt>Приоритет</dt><dd class="p-${t.priority}">${PRIO[t.priority]}</dd><dt>Напоминание</dt><dd>${t.remind?fmtDT(t.remind):'нет'}</dd></dl>
+    ${t.series?`<div class="serbox">🔁 Повторяется: <b>${esc(REPEAT_RU[t.series.repeat]||'')}</b>${t.series.active?'':' · остановлено'}${t.series.active&&(t.author===S.me||isOwner())?` <button type="button" class="linkbtn" data-stopser="${t.series.id}">Остановить повтор</button>`:''}</div>`:''}
+    ${t.photo?`<div class="serbox">📸 Нужен фото-отчёт — исполнитель отправляет фото ответом на сообщение бота</div>`:''}
+    ${t.checklist.length?`<div class="field"><label>Чек-лист · ${t.checklist.filter(c=>c.d).length} из ${t.checklist.length}</label></div><div class="cklist">${t.checklist.map((c,i)=>`<label class="ck ${c.d?'on':''}"><input type="checkbox" data-ck="${t.id}|${i}" ${c.d?'checked':''} ${canStatus?'':'disabled'}><span>${esc(c.t)}</span></label>`).join('')}</div>`:''}
+    ${t.assignee===S.me&&t.author!==S.me&&t.status!=='done'?`<div style="margin:0 0 10px"><button type="button" class="btn sm" data-more="${t.id}">⏳ Нужно больше времени</button></div>`:''}
     ${canExtend(t)?`<div class="extbox ${late(t)?'late':''}"><div class="field" style="margin:0 0 8px"><label>${late(t)?'Срок истёк — добавить время':'Продлить срок'}</label></div>
       <div class="extrow">${[['2h','+2 часа'],['1d','+1 день'],['3d','+3 дня'],['7d','+неделя']].map(([c,l])=>`<button type="button" class="btn sm" data-ext="${t.id}|${c}">${l}</button>`).join('')}</div>
       <form class="extrow" id="ext-form" data-id="${t.id}" style="margin-top:8px"><input type="date" id="ext-due" value="${t.due>=TODAY?addDays(t.due,1):addDays(TODAY,1)}" min="${TODAY}" aria-label="Новая дата"><input type="time" id="ext-time" value="${t.dueTime||''}" aria-label="Время (необязательно)"><button class="btn sm primary" type="submit">Назначить срок</button></form></div>`:''}
     ${canStatus?`<div class="field"><label>Статус</label></div><div class="stat-row">${Object.keys(STATUS).map(s=>`<button type="button" class="${t.status===s?'sel':''}" data-status="${t.id}|${s}">${STATUS[s]}</button>`).join('')}</div>`:''}
     <div class="field"><label>Комментарии</label></div>
-    ${t.comments.map(c=>`<div class="cm"><b>${esc(U(c.u).name)}</b><time>${fmtDT(c.at)}</time><div>${esc(c.t)}</div></div>`).join('') || '<div class="note" style="margin-bottom:8px">Пока нет комментариев</div>'}
+    ${t.comments.map(c=>`<div class="cm"><b>${esc(U(c.u).name)}</b><time>${fmtDT(c.at)}</time><div>${esc(c.t)}</div>${c.f?`<a href="/api/comments/${c.id}/file" target="_blank" rel="noopener"><img class="cm-img" src="/api/comments/${c.id}/file" alt="Фото к задаче" loading="lazy"></a>`:''}</div>`).join('') || '<div class="note" style="margin-bottom:8px">Пока нет комментариев</div>'}
     <form class="add" id="add-cm" data-id="${t.id}"><input id="cm-text" placeholder="Написать комментарий" aria-label="Комментарий" autocomplete="off"><button class="btn" type="submit">Отправить</button></form>
     <div class="mact">${t.author===S.me||isOwner()?`<button type="button" class="btn" data-delete="${t.id}" style="color:var(--bad)">Удалить задачу</button>`:''}<button type="button" class="btn" data-close="1">Закрыть</button></div>
   </div>`);
@@ -874,10 +908,12 @@ async function boot(){
 
 /* ---------- события ---------- */
 document.addEventListener('click', e => {
-  const el = e.target.closest('[data-pay],[data-pt],[data-addon],[data-admpay],[data-ext],[data-wk],[data-wcat],[data-wedit],[data-wdel],[data-bud],[data-act],[data-open],[data-tick],[data-plan],[data-pdel],[data-pedit],[data-hedit],[data-hdel],[data-hab],[data-status],[data-close],[data-delete],[data-sw],[data-cf],[data-view],[data-mode]');
+  const el = e.target.closest('[data-stopser],[data-more],[data-pay],[data-pt],[data-addon],[data-admpay],[data-ext],[data-wk],[data-wcat],[data-wedit],[data-wdel],[data-bud],[data-act],[data-open],[data-tick],[data-plan],[data-pdel],[data-pedit],[data-hedit],[data-hdel],[data-hab],[data-status],[data-close],[data-delete],[data-sw],[data-cf],[data-view],[data-mode]');
   if(!el) return;
   if(el.dataset.close && e.target !== el && !e.target.closest('button[data-close]')) return;
   if(el.dataset.pay) return openPay(el.dataset.pay);
+  if(el.dataset.more){ const id=Number(el.dataset.more); return (async()=>{ try { await api('POST',`/api/tasks/${id}/more`); await reload(); render(); openTask(id); toast('Запрос отправлен — руководитель сможет продлить срок'); } catch(err){ toast(err.message); } })(); }
+  if(el.dataset.stopser){ if(el.dataset.confirm!=='1'){ el.dataset.confirm='1'; el.textContent='Точно остановить?'; return; } return act(()=>api('DELETE','/api/series/'+el.dataset.stopser),'Повтор остановлен — новые задачи создаваться не будут').then(()=>closeModal()); }
   if(el.dataset.pt){ document.querySelectorAll('[data-pt]').forEach(b=>b.classList.toggle('on', b===el)); document.querySelectorAll('[data-pq]').forEach(d=>d.hidden = d.dataset.pq!==el.dataset.pt); return; }
   if(el.dataset.addon){ const [id,k] = el.dataset.addon.split('|'); const u = U(Number(id)); const on = !u[k];
     return act(()=>api('PATCH','/api/members/'+id,{[k]:on}), `${k==='plansOn'?'«Мои планы»':'«Кошелёк»'} ${on?'подключён':'отключён'} — ${u.name}`); }
@@ -941,8 +977,10 @@ document.addEventListener('submit', async e => {
     if(f.id==='new-task'){
       const title = $('n-title').value.trim(), who = $('n-who').value;
       if(!title || !who) return toast('Заполните задачу и исполнителя');
-      await api('POST','/api/tasks',{title, desc:$('n-desc').value, assignee:Number(who), priority:$('n-prio').value, due:$('n-due').value, dueTime:$('n-due-time').value||null, remind:$('n-rem').value||null});
-      closeModal(); await reload(); render(); return toast(Number(who)!==S.me ? `Задача поставлена — ${U(Number(who)).name} получит уведомление` : 'Задача добавлена');
+      const created = await api('POST','/api/tasks',{title, desc:$('n-desc').value, assignee:Number(who), priority:$('n-prio').value, due:$('n-due').value, dueTime:$('n-due-time').value||null, remind:$('n-rem').value||null, repeat:$('n-rep').value||null, wdays:[...document.querySelectorAll('input[name=n-wd]:checked')].map(i=>Number(i.value)), checklist:$('n-check').value, requiresPhoto:$('n-photo').checked});
+      closeModal(); await reload(); render();
+      if(created.series && !created.id) return toast('Повтор настроен — первая задача появится в ближайший подходящий день в 06:00');
+      return toast(created.series ? 'Повторяющаяся задача создана — задача на сегодня уже у исполнителя' : Number(who)!==S.me ? `Задача поставлена — ${U(Number(who)).name} получит уведомление` : 'Задача добавлена');
     }
     if(f.id==='add-plan'){ const v=$('plan-text').value.trim(); if(!v) return; await api('POST','/api/plans',{day:DAY,text:v}); await reload(); render(); $('plan-text')?.focus(); return; }
     if(f.id==='adm-find'){ ADQ=$('adm-q').value.trim(); ADF = ADQ ? await api('GET','/api/admin/find-user?q='+encodeURIComponent(ADQ)) : []; if(!ADF.length) toast('Никого не нашёл'); return render(); }
@@ -999,6 +1037,8 @@ document.addEventListener('submit', async e => {
 });
 document.addEventListener('change', e => {
   const id = e.target.id;
+  if(e.target.dataset && e.target.dataset.ck){ const [tid,ix]=e.target.dataset.ck.split('|'); return (async()=>{ try { await api('POST',`/api/tasks/${tid}/check`,{idx:Number(ix)}); await reload(); render(); openTask(Number(tid)); } catch(err){ toast(err.message); } })(); }
+  if(id==='n-rep'){ const v=e.target.value; $('n-days-f').hidden = v!=='days'; $('n-due-l').textContent = v ? 'Начать с' : 'Срок'; if(v && $('n-due').value===addDays(TODAY,1)) $('n-due').value = TODAY; return; }
   if(id==='bud-add' && e.target.value){ WBUD = e.target.value; WAL.budgets[WBUD] = WAL.budgets[WBUD] || 0; render(); setTimeout(()=>$('bud-amount')?.focus(),20); return; }
   if(id==='f-who'){ F.who = e.target.value; return render(); }
   if(id==='i-dept') $('i-newdept-f').hidden = e.target.value!=='new';

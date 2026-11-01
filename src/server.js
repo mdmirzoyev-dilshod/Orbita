@@ -179,6 +179,8 @@ app.get('/api/state', auth(), wrap(async (req, res) => {
   const t0 = today();
   const tasks = await db.all(`SELECT * FROM tasks WHERE company_id=$1 AND (assignee_id = ANY($2) OR author_id=$3) ORDER BY due, id`, [me.company_id, scope, me.id]);
   const comments = tasks.length ? await db.all(`SELECT * FROM comments WHERE task_id = ANY($1) ORDER BY id`, [tasks.map(t => t.id)]) : [];
+  const sids = [...new Set(tasks.map(t => t.series_id).filter(Boolean))];
+  const seriesMap = Object.fromEntries((sids.length ? await db.all(`SELECT id, repeat, active FROM task_series WHERE id = ANY($1)`, [sids]) : []).map(x => [x.id, x]));
   const u2m = new Map(members.filter(m => scope.includes(m.id)).map(m => [m.user_id, m.id]));   // человек → его участие в этой компании
   const plans = await db.all(`SELECT * FROM plan_items WHERE user_id = ANY($1) AND day BETWEEN $2 AND $3 ORDER BY time NULLS LAST, id`, [[...u2m.keys()], addDays(t0, -21), addDays(t0, 60)]);
   const habits = await db.all(`SELECT * FROM habits WHERE user_id=$1 ORDER BY id`, [me.user_id]);
@@ -204,7 +206,8 @@ app.get('/api/state', auth(), wrap(async (req, res) => {
     depts: depts.map(d => ({ id: d.id, name: d.name, color: d.color })),
     users: members.map(m => ({ id: m.id, name: m.name, demo: Boolean(m.demo), role: m.role === 'worker' ? 'worker' : 'manager', level: m.role, owner: m.role === 'owner', admin: L.ADMIN.includes(m.role), dept: m.dept || 'Без отдела', deptId: m.dept_id, deptColor: m.dept_color || '#9AA3C7', plansOn: m.plans_on, walletOn: m.wallet_on, title: m.title || '', boss: m.boss_id, tg: Boolean(m.tg_id) && (m.settings || {}).tg !== false, username: m.username })),
     tasks: tasks.map(t => ({ id: t.id, title: t.title, desc: t.descr, assignee: t.assignee_id, author: t.author_id, priority: t.priority, status: t.status, created: t.created_on, due: t.due, dueTime: t.due_time, ext: t.extended, remind: t.remind_at, doneAt: t.done_on,
-      comments: comments.filter(c => c.task_id === t.id).map(c => ({ u: c.member_id, t: c.text, at: c.at })) })),
+      comments: comments.filter(c => c.task_id === t.id).map(c => ({ id: c.id, u: c.member_id, t: c.text, at: c.at, f: Boolean(c.file_id) })),
+      photo: t.requires_photo, checklist: Array.isArray(t.checklist) ? t.checklist : [], series: t.series_id ? { id: t.series_id, repeat: (seriesMap[t.series_id] || {}).repeat, active: (seriesMap[t.series_id] || {}).active } : null })),
     plans: P,
     habits: habits.map(h => ({ id: h.id, name: h.name, note: h.note, wdays: h.wdays, start: h.start_on, until: h.until, time: h.time, remind: h.remind, days: Object.fromEntries(marks.filter(m => m.habit_id === h.id).map(m => [m.day, true])) })),
     notifs: notifs.map(n => ({ id: n.id, to: me.id, text: n.text, at: n.at, read: n.read })),
@@ -228,7 +231,7 @@ async function visibleTask(me, id) {
 app.post('/api/tasks', auth(), wrap(async (req, res) => {
   const r = await L.createTask(req.me, req.body);
   if (r.error) return res.status(r.error.startsWith('Этому') ? 403 : 400).json({ error: r.error });
-  res.json({ id: r.task.id });
+  res.json({ id: r.task ? r.task.id : null, series: r.series ? r.series.id : null });
 }));
 app.patch('/api/tasks/:id', auth(), wrap(async (req, res) => {
   const t = await visibleTask(req.me, Number(req.params.id));
@@ -236,7 +239,10 @@ app.patch('/api/tasks/:id', auth(), wrap(async (req, res) => {
   const b = req.body;
   if (b.status) {
     if (!L.STATUS[b.status]) return res.status(400).json({ error: 'Неизвестный статус' });
-    await L.changeStatus(t.id, req.me.id, b.status);
+    if (b.status === 'done' && t.assignee_id === req.me.id && t.author_id !== req.me.id) {
+      const r = await L.markDone(t, req.me);
+      if (r.needPhoto) return res.status(400).json({ error: 'Нужен фото-отчёт: ответьте фотографией на сообщение бота об этой задаче' });
+    } else await L.changeStatus(t.id, req.me.id, b.status);
   }
   if (t.author_id === req.me.id || L.isAdmin(req.me)) {
     const sets = [], vals = [];
@@ -249,6 +255,31 @@ app.patch('/api/tasks/:id', auth(), wrap(async (req, res) => {
     if (sets.length) { vals.push(t.id); await db.q(`UPDATE tasks SET ${sets.join(', ')} WHERE id=$${vals.length}`, vals); }
   }
   res.json({ ok: true });
+}));
+app.post('/api/tasks/:id/check', auth(), wrap(async (req, res) => {
+  const r = await L.toggleCheck(Number(req.params.id), req.me, Number(req.body.idx));
+  if (r.error) return res.status(400).json(r);
+  res.json({ ok: true });
+}));
+app.post('/api/tasks/:id/more', auth(), wrap(async (req, res) => {
+  const t = await visibleTask(req.me, Number(req.params.id));
+  if (!t || t.assignee_id !== req.me.id) return res.status(403).json({ error: 'Задача назначена не вам' });
+  const r = await L.askMore(t, req.me);
+  if (r.error) return res.status(400).json(r);
+  res.json({ ok: true });
+}));
+app.delete('/api/series/:id', auth(), wrap(async (req, res) => {
+  const ser = await db.one(`SELECT * FROM task_series WHERE id=$1 AND company_id=$2`, [Number(req.params.id), req.me.company_id]);
+  if (!ser || !(ser.author_id === req.me.id || L.isAdmin(req.me))) return res.status(403).json({ error: 'Остановить повтор может автор задачи или руководство' });
+  await db.q(`UPDATE task_series SET active=false WHERE id=$1`, [ser.id]);
+  res.json({ ok: true });
+}));
+app.get('/api/comments/:id/file', auth(), wrap(async (req, res) => {
+  const c = await db.one(`SELECT c.file_id, c.task_id FROM comments c WHERE c.id=$1`, [Number(req.params.id)]);
+  const t = c && c.file_id && await visibleTask(req.me, c.task_id);
+  if (!t) return res.status(404).end();
+  try { const buf = await tg.download(c.file_id); res.set('Cache-Control', 'private, max-age=86400').type('image/jpeg').send(buf); }
+  catch { res.status(502).end(); }
 }));
 app.post('/api/tasks/:id/extend', auth(), wrap(async (req, res) => {
   const t = await visibleTask(req.me, Number(req.params.id));

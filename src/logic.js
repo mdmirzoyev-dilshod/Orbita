@@ -38,7 +38,7 @@ async function notify(memberId, text, opts = {}) {
   if (s.tg === false) return;
   if (opts.kind === 'assign' && s.onAssign === false) return;
   if (['done', 'status', 'comment', 'review'].includes(opts.kind) && s.onDone === false) return;
-  await tg.send(m.tg_id, text, { doneTaskId: opts.doneTaskId, taskId: opts.taskId, path: opts.path, buttons: opts.buttons });
+  await tg.send(m.tg_id, text, { doneTaskId: opts.doneTaskId, taskId: opts.taskId, path: opts.path, buttons: opts.buttons, photo: opts.photo, checklist: opts.checklist });
 }
 
 // Основное участие человека (самое раннее активное) — туда идут личные напоминания и итоги дня
@@ -153,6 +153,7 @@ async function tick() {
     await notify(hm, `💪 Привычка: ${h.name}${h.note ? '\n🎯 ' + h.note : ''}\n\nНе забудьте отметить в «Моих планах».`, { kind: 'remind', path: '/#plans' });
   }
   await require('./billing').trialReminders(tg).catch(e => console.warn('[billing]', e.message));
+  await seriesTick(time);
   // напоминания, указанные в задаче
   const due = await db.all(`SELECT * FROM tasks WHERE remind_at IS NOT NULL AND NOT remind_sent AND status <> 'done' AND remind_at <= $1`, [now]);
   for (const t of due) {
@@ -202,22 +203,137 @@ async function createTask(me, b) {
   const remind = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(b.remind || '') ? b.remind : null;
   const priority = ['high', 'medium', 'low'].includes(b.priority) ? b.priority : 'medium';
   const descr = String(b.desc || '').trim().slice(0, 2000);
-  const t = await db.one(`INSERT INTO tasks (company_id, title, descr, assignee_id, author_id, priority, created_on, due, due_time, remind_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
-    [me.company_id, title, descr, assignee, me.id, priority, today(), due, dueTime, remind]);
+  const checklist = parseChecklist(b.checklist);
+  const requiresPhoto = Boolean(b.requiresPhoto);
+  // повторяющаяся задача: создаём серию, задачи появляются сами в нужные дни
+  const repeat = ['daily', 'weekdays', 'days', 'monthly'].includes(b.repeat) ? b.repeat : null;
+  if (repeat && !b.seriesId) {
+    const wdays = Array.isArray(b.wdays) ? [...new Set(b.wdays.map(Number).filter(n => n >= 0 && n <= 6))].sort().join('') : (repeat === 'weekdays' ? '12345' : '0123456');
+    const ser = await db.one(`INSERT INTO task_series (company_id, author_id, assignee_id, title, descr, priority, due_time, requires_photo, checklist, repeat, wdays, mday, start_on) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *`,
+      [me.company_id, me.id, assignee, title, descr, priority, dueTime, requiresPhoto, JSON.stringify(checklist.map(c => c.t)), repeat, repeat === 'days' ? (wdays || '12345') : repeat === 'weekdays' ? '12345' : '0123456', repeat === 'monthly' ? Number(due.slice(8, 10)) : null, due]);
+    const first = await runSeries(ser, true);
+    return { task: first, series: ser };
+  }
+  const t = await db.one(`INSERT INTO tasks (company_id, title, descr, assignee_id, author_id, priority, created_on, due, due_time, remind_at, requires_photo, checklist, series_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *`,
+    [me.company_id, title, descr, assignee, me.id, priority, today(), due, dueTime, remind, requiresPhoto, JSON.stringify(checklist), b.seriesId || null]);
   if (assignee !== me.id) {
     const who = await memberName(me.id);
-    await notify(assignee, `📌 Новая задача\nот: ${who}\n\n«${title}»\nСрок: ${fmtDue(due)}${dueTime ? ' до ' + dueTime : ''} · Приоритет: ${PRIO[priority]}${descr ? '\n\n' + descr : ''}${remind ? '\n⏰ Напомню ' + remind.replace('T', ' в ') : ''}${REPLY_HINT}`, { kind: 'assign', doneTaskId: t.id, path: '/#tasks' });
+    await notify(assignee, `${b.seriesId ? '🔁 Задача на сегодня' : '📌 Новая задача'}\nот: ${who}\n\n«${title}»\nСрок: ${fmtDue(due)}${dueTime ? ' до ' + dueTime : ''} · Приоритет: ${PRIO[priority]}${descr ? '\n\n' + descr : ''}${checklist.length ? '\n\n📋 Чек-лист — отмечайте кнопками ниже' : ''}${requiresPhoto ? '\n📸 Нужен фото-отчёт: после выполнения ответьте на это сообщение фотографией' : ''}${remind ? '\n⏰ Напомню ' + remind.replace('T', ' в ') : ''}${REPLY_HINT}`, { kind: 'assign', doneTaskId: t.id, path: '/#tasks', checklist });
   }
   return { task: t };
 }
-async function addComment(t, me, text) {
+async function addComment(t, me, text, { fileId = null, silent = false } = {}) {
   text = String(text || '').trim().slice(0, 2000);
-  if (!text) return { error: 'Пустой комментарий' };
-  await db.q(`INSERT INTO comments (task_id, member_id, text, at) VALUES ($1,$2,$3,$4)`, [t.id, me.id, text, nowLocal()]);
+  if (!text && !fileId) return { error: 'Пустой комментарий' };
+  if (!text) text = '📷 Фото-отчёт';
+  await db.q(`INSERT INTO comments (task_id, member_id, text, at, file_id) VALUES ($1,$2,$3,$4,$5)`, [t.id, me.id, text, nowLocal(), fileId]);
+  if (silent) return { ok: true };
   const who = await memberName(me.id);
-  for (const to of new Set([t.assignee_id, t.author_id])) if (to && to !== me.id) await notify(to, `💬 ${who} к задаче «${t.title}»:\n${text}${REPLY_HINT}`, { kind: 'comment', taskId: t.id, path: '/#tasks' });
+  for (const to of new Set([t.assignee_id, t.author_id])) if (to && to !== me.id) await notify(to, `${fileId ? '📷' : '💬'} ${who} к задаче «${t.title}»:\n${text}${REPLY_HINT}`, { kind: 'comment', taskId: t.id, path: '/#tasks', photo: fileId });
   return { ok: true };
 }
+function parseChecklist(v) {
+  const arr = Array.isArray(v) ? v : String(v || '').split('\n');
+  return arr.map(x => (typeof x === 'object' && x ? { t: String(x.t || '').trim().slice(0, 120), d: Boolean(x.d) } : { t: String(x).replace(/^[-•*\s]+/, '').trim().slice(0, 120), d: false })).filter(x => x.t).slice(0, 20);
+}
+// отметить пункт чек-листа
+async function toggleCheck(taskId, member, idx) {
+  const t = await db.one(`SELECT * FROM tasks WHERE id=$1`, [taskId]);
+  if (!t || !(await canSeeTask(member, t))) return { error: 'Задача недоступна' };
+  const list = Array.isArray(t.checklist) ? t.checklist : [];
+  if (!list[idx]) return { error: 'Пункт не найден' };
+  list[idx].d = !list[idx].d;
+  await db.q(`UPDATE tasks SET checklist=$1 WHERE id=$2`, [JSON.stringify(list), t.id]);
+  if (list.every(c => c.d) && t.author_id && t.author_id !== member.id) await notify(t.author_id, `📋 ${await memberName(member.id)} отметил(а) все пункты чек-листа\n«${t.title}»`, { kind: 'status', taskId: t.id, path: '/#tasks' });
+  return { ok: true, task: { ...t, checklist: list } };
+}
+// «Сделал» — с проверкой фото-отчёта
+async function markDone(t, member) {
+  if (t.status === 'done') return { ok: true, already: true };
+  if (t.requires_photo) {
+    const ph = await db.one(`SELECT 1 FROM comments WHERE task_id=$1 AND file_id IS NOT NULL`, [t.id]);
+    if (!ph) return { needPhoto: true };
+  }
+  await changeStatus(t.id, member.id, 'done');
+  return { ok: true };
+}
+// фото к задаче: комментарий; если нужен фото-отчёт — задача выполнена
+async function photoReport(t, member, fileId, caption) {
+  await addComment(t, member, caption || '📷 Фото-отчёт', { fileId, silent: true });
+  const who = await memberName(member.id);
+  const closes = t.requires_photo && t.status !== 'done' && t.assignee_id === member.id;
+  if (closes) await db.q(`UPDATE tasks SET status='done', done_on=$1 WHERE id=$2`, [today(), t.id]);
+  for (const to of new Set([t.assignee_id, t.author_id])) if (to && to !== member.id)
+    await notify(to, `${closes ? '✅' : '📷'} ${who} ${closes ? 'выполнил(а) задачу с фото-отчётом' : 'прислал(а) фото к задаче'}\n«${t.title}»${caption ? '\n' + caption : ''}`, { kind: closes ? 'done' : 'comment', taskId: t.id, path: '/#tasks', photo: fileId });
+  return { closed: closes };
+}
+// «Нужно больше времени» — запрос тому, кто может продлить
+async function askMore(t, member) {
+  if (t.status === 'done') return { error: 'Задача уже выполнена' };
+  const who = await memberName(member.id);
+  const to = (await extendersToNotify(t)).filter(x => x !== member.id);
+  if (!to.length) return { error: 'Некому продлить срок — обратитесь к руководителю' };
+  for (const id of to) await notify(id, `⏳ ${who} просит больше времени\n«${t.title}»\nСрок сейчас: ${dueLabel(t.due, t.due_time)}\n\nСколько добавить?`, { kind: 'overdue', taskId: t.id, path: '/#tasks', buttons: EXT_BUTTONS(t.id) });
+  await db.q(`INSERT INTO comments (task_id, member_id, text, at) VALUES ($1,$2,$3,$4)`, [t.id, member.id, '⏳ Попросил(а) больше времени', nowLocal()]);
+  return { ok: true };
+}
+
+/* ---------- повторяющиеся задачи ---------- */
+const seriesMatches = (s, day) => {
+  const wd = new Date(day + 'T12:00:00Z').getUTCDay(), dom = Number(day.slice(8, 10));
+  if (s.repeat === 'daily') return true;
+  if (s.repeat === 'weekdays') return wd >= 1 && wd <= 5;
+  if (s.repeat === 'days') return String(s.wdays || '').includes(String(wd));
+  if (s.repeat === 'monthly') { const last = new Date(Date.UTC(Number(day.slice(0, 4)), Number(day.slice(5, 7)), 0)).getUTCDate(); return dom === Math.min(s.mday || 1, last); }
+  return false;
+};
+const REPEAT_RU = { daily: 'каждый день', weekdays: 'по будням', days: 'по дням недели', monthly: 'каждый месяц' };
+// создать задачу серии на сегодня (если сегодня подходит и ещё не создана)
+async function runSeries(ser, force = false) {
+  const d = today();
+  if (!ser.active || ser.start_on > d || (ser.last_on && ser.last_on >= d) || !seriesMatches(ser, d)) return null;
+  const author = ser.author_id && await db.one(`SELECT * FROM members WHERE id=$1 AND active`, [ser.author_id]);
+  if (!author) return null;
+  const upd = await db.one(`UPDATE task_series SET last_on=$1 WHERE id=$2 AND (last_on IS NULL OR last_on < $1) RETURNING id`, [d, ser.id]);
+  if (!upd) return null;   // уже создана параллельно
+  const r = await createTask(author, { title: ser.title, desc: ser.descr, assignee: ser.assignee_id, priority: ser.priority, due: d, dueTime: ser.due_time, requiresPhoto: ser.requires_photo, checklist: ser.checklist, seriesId: ser.id });
+  return r.task || null;
+}
+async function seriesTick(time) {
+  if (time < '06:00') return;
+  const list = await db.all(`SELECT * FROM task_series WHERE active AND start_on <= $1 AND (last_on IS NULL OR last_on < $1)`, [today()]);
+  for (const s of list) await runSeries(s).catch(e => console.warn('[series]', e.message));
+}
+
+tg.handlers.acc = async (taskId, userId) => {
+  const t = await db.one(`SELECT t.*, m.id AS mid FROM tasks t JOIN members m ON m.id=t.assignee_id WHERE t.id=$1 AND m.user_id=$2`, [taskId, userId]);
+  if (!t) return { error: 'Задача назначена не вам' };
+  if (t.status === 'new') await changeStatus(t.id, t.mid, 'progress');
+  return { ok: true };
+};
+tg.handlers.doneBtn = async (taskId, userId) => {
+  const t = await db.one(`SELECT t.*, m.id AS mid FROM tasks t JOIN members m ON m.id=t.assignee_id WHERE t.id=$1 AND m.user_id=$2`, [taskId, userId]);
+  if (!t) return { error: 'Задача не найдена или назначена не вам' };
+  return markDone(t, { id: t.mid });
+};
+tg.handlers.more = async (taskId, userId) => {
+  const t = await db.one(`SELECT t.*, m.id AS mid FROM tasks t JOIN members m ON m.id=t.assignee_id WHERE t.id=$1 AND m.user_id=$2`, [taskId, userId]);
+  if (!t) return { error: 'Задача назначена не вам' };
+  return askMore(t, { id: t.mid });
+};
+tg.handlers.check = async (taskId, userId, idx) => {
+  const t = await db.one(`SELECT company_id FROM tasks WHERE id=$1`, [taskId]);
+  const m = t && await db.one(`SELECT * FROM members WHERE company_id=$1 AND user_id=$2 AND active`, [t.company_id, userId]);
+  if (!m) return { error: 'Задача недоступна' };
+  return toggleCheck(taskId, m, idx);
+};
+tg.handlers.photo = async ({ chat, user, taskId, fileId, caption }) => {
+  const t = await db.one(`SELECT * FROM tasks WHERE id=$1`, [taskId]);
+  const m = t && await db.one(`SELECT * FROM members WHERE company_id=$1 AND user_id=$2 AND active`, [t.company_id, user.id]);
+  if (!t || !m || !(await canSeeTask(m, t))) return tg.send(chat, 'Эта задача уже недоступна.', { open: false });
+  const r = await photoReport(t, m, fileId, caption);
+  return tg.send(chat, r.closed ? `✅ Фото-отчёт принят — задача «${t.title}» выполнена.` : `📷 Фото добавлено к задаче «${t.title}».`, { open: false, taskId: t.id });
+};
 
 /* ---------- продление срока ---------- */
 const EXT = { '2h': { hours: 2, label: '+2 часа' }, '1d': { days: 1, label: '+1 день' }, '3d': { days: 3, label: '+3 дня' }, '7d': { days: 7, label: '+неделя' } };
@@ -279,4 +395,4 @@ tg.handlers.extend = async (taskId, userId, code) => {
 
 function addMinutes(hhmm, n) { const [h, m] = hhmm.split(':').map(Number); const x = h * 60 + m + n; return `${String(Math.min(23, Math.floor(x / 60))).padStart(2, '0')}:${String(x >= 1440 ? 59 : x % 60).padStart(2, '0')}`; }
 
-module.exports = { canSeeTask, createTask, addComment, primaryMemberId, EXT, extendTask, canExtend, ADMIN, isAdmin, STATUS, PRIO, companyMembers, scopeOf, notify, memberName, changeStatus, morningDigest, eveningDigest, tick };
+module.exports = { REPEAT_RU, seriesMatches, runSeries, seriesTick, toggleCheck, markDone, photoReport, askMore, parseChecklist, canSeeTask, createTask, addComment, primaryMemberId, EXT, extendTask, canExtend, ADMIN, isAdmin, STATUS, PRIO, companyMembers, scopeOf, notify, memberName, changeStatus, morningDigest, eveningDigest, tick };
