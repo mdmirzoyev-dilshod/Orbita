@@ -171,6 +171,25 @@ CREATE TABLE IF NOT EXISTS kv (
   k TEXT PRIMARY KEY,
   v TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS wallet_tx (
+  id          SERIAL PRIMARY KEY,
+  user_id     INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  kind        TEXT NOT NULL CHECK (kind IN ('expense','income')),
+  amount      BIGINT NOT NULL CHECK (amount > 0),
+  category    TEXT NOT NULL,
+  note        TEXT NOT NULL DEFAULT '',
+  day         DATE NOT NULL,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS wallet_user_day ON wallet_tx(user_id, day);
+CREATE TABLE IF NOT EXISTS wallet_budgets (
+  user_id     INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  category    TEXT NOT NULL,
+  amount      BIGINT NOT NULL,
+  PRIMARY KEY (user_id, category)
+);
+
 `;
 
 async function migrate() {

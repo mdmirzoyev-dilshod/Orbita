@@ -67,7 +67,23 @@ async function onMessage(m) {
     const head = confirmed
       ? `✅ Вход подтверждён, ${user.name}!\n\nВернитесь в браузер — страница откроется сама. Если не открылась, нажмите кнопку ниже.`
       : `Здравствуйте, ${user.name}! Это бот «Орбиты» — задачи и личные планы команды.\n\nНажмите кнопку ниже, чтобы войти на сайт (кнопка действует 15 минут).`;
-    return call('sendMessage', { chat_id: chat, text: head + `\n\nСюда будут приходить задачи, напоминания и итоги дня.\nКоманды: /tasks — мои задачи, /plan — план на сегодня, /login — войти на сайт`, reply_markup: rows.length ? { inline_keyboard: rows } : undefined });
+    return call('sendMessage', { chat_id: chat, text: head + `\n\nСюда будут приходить задачи, напоминания и итоги дня.\nКоманды: /tasks — мои задачи, /plan — план на сегодня, /wallet — кошелёк, /login — войти на сайт\n\n👛 Чтобы записать расход, просто напишите: «45000 такси»`, reply_markup: rows.length ? { inline_keyboard: rows } : undefined });
+  }
+
+  // Кошелёк: «45000 такси» — записать расход, «+5 000 000 зарплата» — доход
+  const W = require('./wallet');
+  if (text.startsWith('/wallet')) {
+    const m = W.monthOf(today()), t = await W.totals(user.id, m);
+    const top = await db.all(`SELECT category, sum(amount)::bigint AS s FROM wallet_tx WHERE user_id=$1 AND kind='expense' AND day >= $2 GROUP BY category ORDER BY 2 DESC LIMIT 5`, [user.id, W.monthStart(m)]);
+    return send(chat, `👛 Кошелёк за ${W.monthName(m)}\n\nРасходы: ${W.fmtSum(t.expense)}\nДоходы: ${W.fmtSum(t.income)}\nОстаток: ${W.fmtSum(t.income - t.expense)}${top.length ? '\n\nБольше всего:\n' + top.map(x => '• ' + x.category + ' — ' + W.fmtSum(x.s)).join('\n') : ''}\n\nЧтобы записать расход, просто напишите сумму и на что: «45000 такси».`, { path: '/#wallet' });
+  }
+  const q = !text.startsWith('/') && W.parseQuick(text);
+  if (q) {
+    const r = await db.one(`INSERT INTO wallet_tx (user_id, kind, amount, category, note, day) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`, [user.id, q.kind, q.amount, q.category, q.note, today()]);
+    const t = await W.totals(user.id, W.monthOf(today()));
+    return call('sendMessage', { chat_id: chat,
+      text: `${q.kind === 'income' ? '💰 Доход' : '✅ Расход'}: ${W.fmtSum(q.amount)} — ${q.category}${q.note ? ' (' + q.note + ')' : ''}\n\nЗа ${W.monthName(W.monthOf(today()))}: расходы ${W.fmtSum(t.expense)}, доходы ${W.fmtSum(t.income)}`,
+      reply_markup: { inline_keyboard: [[{ text: '↩️ Отменить', callback_data: `wdel:${r.id}` }]] } });
   }
 
   const members = await db.all(`SELECT m.*, c.name AS company FROM members m JOIN companies c ON c.id=m.company_id WHERE m.user_id=$1 AND m.active`, [user.id]);
@@ -87,11 +103,18 @@ async function onMessage(m) {
     const done = items.filter(i => i.done).length;
     return send(chat, `🗓 План на сегодня: ${done} из ${items.length}\n\n${items.map(i => (i.done ? '✅ ' : i.important ? '⭐ ' : '▫️ ') + (i.time ? i.time + ' ' : '') + i.text).join('\n')}`, { path: '/#plans' });
   }
-  return send(chat, 'Команды:\n/tasks — мои задачи\n/plan — мой план на сегодня');
+  return send(chat, 'Команды:\n/tasks — мои задачи\n/plan — мой план на сегодня\n/wallet — кошелёк за месяц\n\n👛 Записать расход: «45000 такси», доход: «+5 000 000 зарплата»');
 }
 
 async function onCallback(cq) {
   const data = cq.data || '';
+  if (data.startsWith('wdel:')) {
+    const user = await db.one(`SELECT * FROM users WHERE tg_id=$1`, [cq.from.id]);
+    const r = user ? await db.q(`DELETE FROM wallet_tx WHERE id=$1 AND user_id=$2`, [Number(data.slice(5)), user.id]) : { rowCount: 0 };
+    await call('answerCallbackQuery', { callback_query_id: cq.id, text: r.rowCount ? 'Запись удалена' : 'Запись уже удалена' });
+    if (cq.message && r.rowCount) await call('editMessageText', { chat_id: cq.message.chat.id, message_id: cq.message.message_id, text: '↩️ Запись отменена' });
+    return;
+  }
   if (data.startsWith('done:')) {
     const taskId = Number(data.slice(5));
     const user = await db.one(`SELECT * FROM users WHERE tg_id=$1`, [cq.from.id]);
@@ -112,7 +135,7 @@ async function poll() {
   const me = await call('getMe');
   if (me && me.ok) BOT_USERNAME = me.result.username;
   await call('deleteWebhook', { drop_pending_updates: false });
-  await call('setMyCommands', { commands: [{ command: 'tasks', description: 'Мои задачи' }, { command: 'plan', description: 'Мой план на сегодня' }, { command: 'login', description: 'Войти на сайт' }] });
+  await call('setMyCommands', { commands: [{ command: 'tasks', description: 'Мои задачи' }, { command: 'plan', description: 'Мой план на сегодня' }, { command: 'wallet', description: 'Кошелёк за месяц' }, { command: 'login', description: 'Войти на сайт' }] });
   console.log('[tg] бот запущен:', BOT_USERNAME ? '@' + BOT_USERNAME : '(нет имени)');
   while (running) {
     try {

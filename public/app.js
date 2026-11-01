@@ -2,6 +2,7 @@
 (function () {
 'use strict';
 const ICON = {
+  wallet:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 7V5a2 2 0 00-2-2H5a2 2 0 00-2 2v14a2 2 0 002 2h12a2 2 0 002-2v-2"/><path d="M21 9h-6a3 3 0 000 6h6z"/><circle cx="16" cy="12" r=".8" fill="currentColor"/></svg>',
   overview:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="7" height="9" rx="2"/><rect x="14" y="3" width="7" height="5" rx="2"/><rect x="14" y="12" width="7" height="9" rx="2"/><rect x="3" y="16" width="7" height="5" rx="2"/></svg>',
   tasks:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6h11M9 12h11M9 18h11"/><path d="M4 6l1 1 2-2M4 12l1 1 2-2M4 18l1 1 2-2"/></svg>',
   plans:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="4" width="18" height="17" rx="3"/><path d="M8 2v4M16 2v4M3 10h18"/><path d="M8 15l2 2 4-4" stroke-linejoin="round"/></svg>',
@@ -142,14 +143,15 @@ function screenOnboard(another){
 /* ---------- навигация ---------- */
 function routes(){
   return isMgr()
-    ? [['overview','Обзор'],['tasks','Задачи'],['plans','Мои планы'],['team','Команда'],['alerts','Уведомления']]
-    : [['tasks','Мои задачи'],['plans','Мои планы'],['team','Команда'],['alerts','Уведомления']];
+    ? [['overview','Обзор'],['tasks','Задачи'],['plans','Мои планы'],['wallet','Кошелёк'],['team','Команда'],['alerts','Уведомления']]
+    : [['tasks','Мои задачи'],['plans','Мои планы'],['wallet','Кошелёк'],['team','Команда'],['alerts','Уведомления']];
 }
 function current(){ const h = location.hash.replace('#',''); const r = routes().map(x=>x[0]); return r.includes(h) ? h : r[0]; }
 const AREA = {
   overview:()=>['Команда', `${scope().length} чел. · ${new Set(scope().map(u=>u.dept)).size} отд.`],
   tasks:()=>isMgr()?['Задачи', `${scopeTasks().filter(t=>t.status!=='done').length} в работе · ${scopeTasks().filter(late).length} просрочено`]:['Задачи', `${S.tasks.filter(t=>t.assignee===S.me&&t.status!=='done').length} в работе`],
   plans:()=>['Планы', 'личный план и привычки'],
+  wallet:()=>['Кошелёк', 'личные расходы — видите только вы'],
   team:()=>['Люди', `${S.users.length} в компании`],
   alerts:()=>['Бот', myUnread()?`${myUnread()} новых сообщений`:'все сообщения прочитаны']
 };
@@ -500,6 +502,111 @@ function vAlerts(){
   </div>`;
 }
 
+
+/* ---------- кошелёк ---------- */
+let WAL = null, WM = null, WK = 'expense', WCAT = '', WBUD = null;
+const CAT_COLORS = ['#2F55E4','#FF8A4C','#1F9D74','#FFC629','#C77DFF','#E0483D','#52C7EA','#8E6CEF','#F08A82','#3FD3A8','#B4A02A','#FF6B9A','#6F8BFF','#9AA3C7'];
+const sum = n => Math.round(Number(n)||0).toLocaleString('ru-RU').replace(/ /g,' ');
+const sumC = n => { n = Math.round(Number(n)||0); const a = Math.abs(n); return a>=1e9 ? (n/1e9).toFixed(1).replace('.',',')+' млрд' : a>=1e6 ? (n/1e6).toFixed(a>=1e7?0:1).replace('.',',')+' млн' : a>=1e4 ? Math.round(n/1e3)+' тыс' : sum(n); };
+const MONN_GEN = ['январь','февраль','март','апрель','май','июнь','июль','август','сентябрь','октябрь','ноябрь','декабрь'];
+const mLabel = m => { const [y,mo] = m.split('-').map(Number); return MONN[mo-1]+' '+y; };
+const mShift = (m,k) => { let [y,mo] = m.split('-').map(Number); mo += k; while(mo<1){mo+=12;y--;} while(mo>12){mo-=12;y++;} return y+'-'+String(mo).padStart(2,'0'); };
+const daysIn = m => { const [y,mo] = m.split('-').map(Number); return new Date(y, mo, 0).getDate(); };
+async function loadWallet(){ WM = WM || TODAY.slice(0,7); try { WAL = await api('GET','/api/wallet?month='+WM); } catch(e){ toast(e.message); return; } if(current()==='wallet') render(); }
+function catIcon(name, kind){ const c = WAL && (WAL.cats[kind||'expense'].find(x=>x.name===name) || WAL.cats.income.find(x=>x.name===name) || WAL.cats.expense.find(x=>x.name===name)); return c ? c.icon : '📦'; }
+function catColor(name){ const i = WAL ? WAL.cats.expense.findIndex(x=>x.name===name) : -1; return CAT_COLORS[(i<0?13:i) % CAT_COLORS.length]; }
+function donut(parts, total){
+  const R=70, C=2*Math.PI*R; let off=0;
+  const segs = parts.map(p=>{ const len = total? C*p.v/total : 0; const el = `<circle cx="90" cy="90" r="${R}" fill="none" stroke="${p.c}" stroke-width="22" stroke-dasharray="${Math.max(0,len-2)} ${C}" stroke-dashoffset="${-off}" transform="rotate(-90 90 90)"><title>${esc(p.n)}: ${sum(p.v)} сум</title></circle>`; off += len; return el; }).join('');
+  return `<svg viewBox="0 0 180 180" class="donut" aria-hidden="true"><circle cx="90" cy="90" r="${R}" fill="none" stroke="#EEF0F7" stroke-width="22"/>${segs}<text x="90" y="84" text-anchor="middle" class="d-l">расходы</text><text x="90" y="106" text-anchor="middle" class="d-v">${esc(sumC(total))}</text></svg>`;
+}
+function dailyBars(m, byDay){
+  const N = daysIn(m), vals = Array.from({length:N},(_,i)=>byDay[i+1]||0), mx = Math.max(...vals,1);
+  const W=innerWidth<700?380:700,H=innerWidth<700?150:170,pl=44,pb=22,bw=(W-pl-6)/N;
+  const isCur = m===TODAY.slice(0,7), td = Number(TODAY.slice(8,10));
+  const passed = isCur ? td : N, avg = vals.slice(0,passed).reduce((a,b)=>a+b,0)/Math.max(1,passed);
+  const y = v => H-pb-(v/mx)*(H-pb-12);
+  const ticks = [0, mx/2, mx];
+  return `<svg viewBox="0 0 ${W} ${H}" class="bars" aria-hidden="true">
+    ${ticks.map(t=>`<line x1="${pl}" x2="${W}" y1="${y(t)}" y2="${y(t)}" stroke="#EEF0F7"/><text x="${pl-6}" y="${y(t)+4}" text-anchor="end" class="ax">${esc(sumC(t))}</text>`).join('')}
+    ${vals.map((v,i)=>{ const x=pl+i*bw+bw*.15, h=H-pb-y(v); const cls = isCur && i+1===td ? '#FFC629' : (isCur && i+1>td ? '#E3E7F7' : '#2F55E4'); return `<rect x="${x.toFixed(1)}" y="${y(v).toFixed(1)}" width="${(bw*.7).toFixed(1)}" height="${Math.max(0,h).toFixed(1)}" rx="3" fill="${cls}"><title>${i+1}: ${sum(v)} сум</title></rect>${(i+1)%5===0||i===0?`<text x="${(x+bw*.35).toFixed(1)}" y="${H-6}" text-anchor="middle" class="ax">${i+1}</text>`:''}`; }).join('')}
+    ${avg>0?`<line x1="${pl}" x2="${W}" y1="${y(avg)}" y2="${y(avg)}" stroke="#E0483D" stroke-dasharray="5 4"/><text x="${W-4}" y="${y(avg)-5}" text-anchor="end" class="ax" fill="#E0483D">в среднем ${esc(sumC(avg))}/день</text>`:''}
+  </svg>`;
+}
+function trend(hist, m){
+  const months = Array.from({length:6},(_,i)=>mShift(m,i-5));
+  const get = (mm,k) => (hist.find(h=>h.m===mm&&h.kind===k)||{s:0}).s;
+  const mx = Math.max(1,...months.flatMap(mm=>[get(mm,'expense'),get(mm,'income')]));
+  return `<div class="trend">${months.map(mm=>{ const e=get(mm,'expense'), inc=get(mm,'income'); return `<div class="tcol ${mm===m?'cur':''}"><div class="tbars"><i style="height:${(inc/mx*100).toFixed(1)}%" class="ti" title="Доходы ${sum(inc)}"></i><i style="height:${(e/mx*100).toFixed(1)}%" class="te" title="Расходы ${sum(e)}"></i></div><small>${MONN[Number(mm.slice(5))-1].slice(0,3)}</small></div>`; }).join('')}</div>
+  <div class="legend" style="justify-content:flex-start"><i style="background:#1F9D74"></i> доходы <i style="background:#2F55E4;margin-left:10px"></i> расходы</div>`;
+}
+function vWallet(){
+  WM = WM || TODAY.slice(0,7);
+  const nav = `<div class="daynav"><button data-act="wm-" aria-label="Предыдущий месяц">‹</button><span style="min-width:120px">${mLabel(WM)}</span><button data-act="wm+" aria-label="Следующий месяц">›</button></div>`;
+  if(!WAL || WAL.month!==WM) return header('Кошелёк', 'Мой кошелёк', nav) + `<div class="card empty">Загружаю…</div>`;
+  const tx = WAL.tx, ex = tx.filter(t=>t.kind==='expense'), inc = tx.filter(t=>t.kind==='income');
+  const E = ex.reduce((a,t)=>a+t.amount,0), I = inc.reduce((a,t)=>a+t.amount,0);
+  const isCur = WM===TODAY.slice(0,7), passed = isCur ? Number(TODAY.slice(8,10)) : daysIn(WM);
+  const pe = WAL.prev.expense, dE = pe ? Math.round((E-pe)/pe*100) : null;
+  const byCat = {}; ex.forEach(t=>byCat[t.category]=(byCat[t.category]||0)+t.amount);
+  const cats = Object.entries(byCat).sort((a,b)=>b[1]-a[1]);
+  const byDay = {}; ex.forEach(t=>{ const d=Number(t.day.slice(8,10)); byDay[d]=(byDay[d]||0)+t.amount; });
+  const parts = cats.map(([n,v])=>({n,v,c:catColor(n)}));
+  const budCats = WAL.cats.expense.filter(c=>byCat[c.name] || (c.name in WAL.budgets));
+  const totalBudget = Object.values(WAL.budgets).reduce((a,b)=>a+b,0);
+  const groups = {}; tx.forEach(t=>(groups[t.day] ||= []).push(t));
+  const kindCats = WAL.cats[WK];
+  return header('Кошелёк', 'Мой кошелёк', nav) + `
+  <div class="grid kpis">
+    <div class="card kpi hero"><div class="lab"><span class="ic">${ICON.wallet}</span>Расходы за месяц${dE!=null?`<span class="delta">${dE>0?'↗ +':'↘ '}${dE}% к прошлому</span>`:''}</div><div class="row"><div><div class="v num">${esc(sumC(E))}</div><div class="sub">${sum(E)} сум${totalBudget?` · бюджет ${sumC(totalBudget)}`:''}</div></div></div></div>
+    <div class="card kpi"><div class="lab"><span class="ic">${ICON.done}</span>Доходы</div><div class="row"><div><div class="v num" style="color:var(--ok)">${esc(sumC(I))}</div><div class="sub">${inc.length} поступл.</div></div></div></div>
+    <div class="card kpi"><div class="lab"><span class="ic">${ICON.target}</span>Остаток</div><div class="row"><div><div class="v num ${I-E<0?'bad':''}">${esc(sumC(I-E))}</div><div class="sub">доходы минус расходы</div></div></div></div>
+    <div class="card kpi"><div class="lab"><span class="ic">${ICON.flame}</span>В среднем в день</div><div class="row"><div><div class="v num">${esc(sumC(E/Math.max(1,passed)))}</div><div class="sub">${isCur?`прогноз на месяц ≈ ${sumC(E/Math.max(1,passed)*daysIn(WM))}`:`за ${passed} дн.`}</div></div></div></div>
+  </div>
+  <div class="grid w-grid">
+    <form class="card" id="wallet-form">
+      <div class="card-h"><div><h3>Записать</h3><p>${WAL.bot?`Или напишите боту <b>@${esc(WAL.bot)}</b>: «45000 такси»`:'Сумма, категория, заметка'}</p></div>
+        <div class="tabs"><button type="button" class="${WK==='expense'?'on':''}" data-wk="expense">Расход</button><button type="button" class="${WK==='income'?'on':''}" data-wk="income">Доход</button></div></div>
+      <div class="field"><label for="w-amount">Сумма, сум</label><input id="w-amount" class="w-amount num" inputmode="numeric" autocomplete="off" placeholder="0" required></div>
+      <div class="field"><label>Категория</label><div class="wcats">${kindCats.map(c=>`<button type="button" class="wcat ${WCAT===c.name?'on':''}" data-wcat="${esc(c.name)}"><span>${c.icon}</span>${esc(c.name)}</button>`).join('')}</div></div>
+      <div class="frow"><div class="field"><label for="w-day">Дата</label><input type="date" id="w-day" value="${isCur?TODAY:WM+'-01'}"></div>
+      <div class="field"><label for="w-note">Заметка</label><input id="w-note" placeholder="На что потратили" autocomplete="off"></div></div>
+      <button class="btn primary" type="submit" style="width:100%;justify-content:center;padding:12px">${WK==='income'?'Записать доход':'Записать расход'}</button>
+    </form>
+    <div class="card"><div class="card-h"><div><h3>Куда уходят деньги</h3><p>${mLabel(WM)}</p></div></div>
+      ${cats.length?`<div class="donut-wrap">${donut(parts,E)}<div class="dleg">${parts.slice(0,8).map(p=>`<div><i style="background:${p.c}"></i><span>${catIcon(p.n)} ${esc(p.n)}</span><b class="num">${Math.round(p.v/E*100)}%</b></div>`).join('')}${parts.length>8?`<div class="note">и ещё ${parts.length-8}</div>`:''}</div></div>`:'<div class="empty">Расходов за этот месяц пока нет. Запишите первый слева или напишите боту.</div>'}
+    </div>
+  </div>
+  <div class="card" style="margin-top:16px"><div class="card-h"><div><h3>Расходы по дням</h3><p>Жёлтым — сегодня, пунктир — средний расход в день</p></div><div style="text-align:right"><div class="note">6 месяцев</div></div></div>
+    <div class="w-bars">${dailyBars(WM, byDay)}<div>${trend(WAL.history, WM)}</div></div></div>
+  <div class="grid low-grid">
+    <div class="card"><div class="card-h"><div><h3>Категории и бюджет</h3><p>Нажмите «лимит», чтобы задать бюджет на месяц</p></div></div>
+      ${budCats.length?`<table class="tbl"><thead><tr><th>Категория</th><th class="n">Потрачено</th><th class="n hide-s">К прошлому</th><th>Бюджет</th></tr></thead><tbody>${budCats.sort((a,b)=>(byCat[b.name]||0)-(byCat[a.name]||0)).map(c=>{ const v=byCat[c.name]||0, b=WAL.budgets[c.name], pv=WAL.prevCats[c.name]||0, d = pv? Math.round((v-pv)/pv*100) : null, pct = b? Math.min(100, v/b*100) : 0;
+        return `<tr><td><span class="wc-ic" style="background:${catColor(c.name)}22">${c.icon}</span> ${esc(c.name)}</td><td class="n num">${sum(v)}</td><td class="n num hide-s" style="color:${d==null?'var(--muted)':d>0?'var(--bad)':'var(--ok)'}">${d==null?'—':(d>0?'+':'')+d+'%'}</td>
+          <td>${WBUD===c.name?`<form class="add" id="bud-form" data-cat="${esc(c.name)}" style="margin:0"><input id="bud-amount" inputmode="numeric" value="${b||''}" placeholder="Сумма" style="padding:6px 8px"><button class="btn sm primary">OK</button></form>`
+            : b?`<div class="budbar" data-bud="${esc(c.name)}" role="button" tabindex="0" title="Изменить лимит"><div class="bar" style="flex:1"><i style="width:${pct}%;background:${v>b?'var(--bad)':pct>80?'var(--warn)':'var(--ok)'}"></i></div><small class="num">${Math.round(v/b*100)}% из ${sumC(b)}</small></div>`
+            : `<button class="linkbtn" data-bud="${esc(c.name)}">лимит</button>`}</td></tr>`; }).join('')}</tbody></table>`:'<div class="empty">Здесь появятся категории ваших расходов</div>'}
+      <div style="margin-top:10px"><select id="bud-add" aria-label="Добавить бюджет для категории"><option value="">+ Бюджет для категории…</option>${WAL.cats.expense.filter(c=>!budCats.includes(c)).map(c=>`<option>${esc(c.name)}</option>`).join('')}</select></div>
+    </div>
+    <div class="card"><div class="card-h"><div><h3>Записи</h3><p>${tx.length} за месяц · нажмите, чтобы изменить</p></div></div>
+      <div class="wlist">${Object.keys(groups).length?Object.entries(groups).map(([d,arr])=>`<div class="group-h" style="color:var(--muted)">${d===TODAY?'Сегодня':d===addDays(TODAY,-1)?'Вчера':fmt(d)} <span class="num">${sumC(arr.filter(t=>t.kind==='expense').reduce((a,t)=>a+t.amount,0))}</span></div>${arr.map(t=>`<div class="wrow" data-wedit="${t.id}" role="button" tabindex="0"><span class="wc-ic" style="background:${t.kind==='income'?'#1F9D7422':catColor(t.category)+'22'}">${catIcon(t.category,t.kind)}</span><div style="min-width:0;flex:1"><b>${esc(t.category)}</b>${t.note?`<small>${esc(t.note)}</small>`:''}</div><b class="num" style="color:${t.kind==='income'?'var(--ok)':'var(--ink)'}">${t.kind==='income'?'+':'−'}${sum(t.amount)}</b></div>`).join('')}`).join(''):'<div class="empty">Записей пока нет</div>'}</div>
+    </div>
+  </div>`;
+}
+function openWalletEdit(id){
+  const t = WAL.tx.find(x=>x.id===id); if(!t) return;
+  const cats = WAL.cats[t.kind];
+  modal(`<form class="modal" id="wedit-form" data-id="${id}" role="dialog" aria-label="Запись">
+    <h2>${t.kind==='income'?'Доход':'Расход'}</h2>
+    <input type="hidden" id="we-kind" value="${t.kind}">
+    <div class="field"><label for="we-amount">Сумма, сум</label><input id="we-amount" class="w-amount num" inputmode="numeric" value="${sum(t.amount)}" required></div>
+    <div class="frow"><div class="field"><label for="we-cat">Категория</label><select id="we-cat">${cats.map(c=>`<option ${c.name===t.category?'selected':''}>${esc(c.name)}</option>`).join('')}</select></div>
+    <div class="field"><label for="we-day">Дата</label><input type="date" id="we-day" value="${t.day}"></div></div>
+    <div class="field"><label for="we-note">Заметка</label><input id="we-note" value="${esc(t.note||'')}"></div>
+    <div class="mact" style="justify-content:space-between"><button type="button" class="btn" data-wdel="${id}" style="color:var(--bad)">Удалить</button><span style="display:flex;gap:6px"><button type="button" class="btn" data-close="1">Отмена</button><button class="btn primary" type="submit">Сохранить</button></span></div>
+  </form>`);
+}
+
 /* ---------- окна ---------- */
 const modal = html => { $('modal').innerHTML = `<div class="ov" data-close="1">${html}</div>`; };
 function closeModal(){ $('modal').innerHTML=''; }
@@ -639,7 +746,8 @@ function render(){
   if(!$('nav')) shell();
   renderNav();
   const r = current();
-  $('main').innerHTML = {overview:vOverview, tasks:vTasks, plans:vPlans, team:vTeam, alerts:vAlerts}[r]();
+  $('main').innerHTML = {overview:vOverview, tasks:vTasks, plans:vPlans, wallet:vWallet, team:vTeam, alerts:vAlerts}[r]();
+  if(r==='wallet' && (!WAL || WAL.month!==WM)) loadWallet();
   if(r==='overview') startConstellation(false); else cancelAnimationFrame(raf);
   if(r==='alerts' && S.notifs.some(n=>!n.read)) setTimeout(()=>api('POST','/api/notifs/read').catch(()=>{}), 4000);
 }
@@ -657,9 +765,14 @@ async function boot(){
 
 /* ---------- события ---------- */
 document.addEventListener('click', e => {
-  const el = e.target.closest('[data-act],[data-open],[data-tick],[data-plan],[data-pdel],[data-pedit],[data-hedit],[data-hdel],[data-hab],[data-status],[data-close],[data-delete],[data-sw],[data-cf],[data-view],[data-mode]');
+  const el = e.target.closest('[data-wk],[data-wcat],[data-wedit],[data-wdel],[data-bud],[data-act],[data-open],[data-tick],[data-plan],[data-pdel],[data-pedit],[data-hedit],[data-hdel],[data-hab],[data-status],[data-close],[data-delete],[data-sw],[data-cf],[data-view],[data-mode]');
   if(!el) return;
   if(el.dataset.close && e.target !== el && !e.target.closest('button[data-close]')) return;
+  if(el.dataset.wk){ WK = el.dataset.wk; WCAT=''; const a=$('w-amount')?.value, n=$('w-note')?.value; render(); if($('w-amount')){ $('w-amount').value=a||''; $('w-note').value=n||''; } return; }
+  if(el.dataset.wcat){ WCAT = WCAT===el.dataset.wcat ? '' : el.dataset.wcat; document.querySelectorAll('.wcat').forEach(b=>b.classList.toggle('on', b.dataset.wcat===WCAT)); return; }
+  if(el.dataset.wedit) return openWalletEdit(Number(el.dataset.wedit));
+  if(el.dataset.wdel){ if(el.dataset.confirm!=='1'){ el.dataset.confirm='1'; el.textContent='Точно удалить?'; return; } closeModal(); return (async()=>{ await api('DELETE','/api/wallet/'+el.dataset.wdel); await loadWallet(); toast('Запись удалена'); })(); }
+  if(el.dataset.bud){ WBUD = el.dataset.bud; render(); setTimeout(()=>$('bud-amount')?.focus(),20); return; }
   if(el.dataset.tick){ e.stopPropagation(); const t=S.tasks.find(x=>x.id===Number(el.dataset.tick)); const ns = t.status==='done'?'progress':'done';
     return act(()=>api('PATCH','/api/tasks/'+t.id,{status:ns}), ns==='done'?(t.author&&t.author!==S.me?'Готово — '+U(t.author).name+' получит уведомление':'Готово'):'Задача снова в работе'); }
   if(el.dataset.open) return openTask(Number(el.dataset.open));
@@ -689,6 +802,8 @@ document.addEventListener('click', e => {
   if(a==='editm') return openEditMember(Number(el.dataset.id));
   if(a==='profile') return openProfile();
   if(a==='deactivate'){ if(el.dataset.confirm!=='1'){ el.dataset.confirm='1'; el.textContent='Точно убрать?'; return; } closeModal(); return act(()=>api('PATCH','/api/members/'+el.dataset.id,{active:false}),'Сотрудник убран из команды'); }
+  if(a==='wm-'){ WM = mShift(WM,-1); WAL=null; render(); return loadWallet(); }
+  if(a==='wm+'){ WM = mShift(WM,1); WAL=null; render(); return loadWallet(); }
   if(a==='day-'){ DAY=addDays(DAY,-1); return render(); }
   if(a==='day+'){ DAY=addDays(DAY,1); return render(); }
   if(a==='tl-'){ F.off-=7; return render(); }
@@ -712,6 +827,18 @@ document.addEventListener('submit', async e => {
       closeModal(); await reload(); render(); return toast(Number(who)!==S.me ? `Задача поставлена — ${U(Number(who)).name} получит уведомление` : 'Задача добавлена');
     }
     if(f.id==='add-plan'){ const v=$('plan-text').value.trim(); if(!v) return; await api('POST','/api/plans',{day:DAY,text:v}); await reload(); render(); $('plan-text')?.focus(); return; }
+    if(f.id==='wallet-form'){
+      const amount = Number($('w-amount').value.replace(/[^\d]/g,''));
+      if(!amount) return toast('Введите сумму');
+      const body = {kind:WK, amount, category:WCAT, note:$('w-note').value, day:$('w-day').value};
+      await api('POST','/api/wallet', body); WCAT=''; const day=$('w-day').value; await loadWallet(); if($('w-day')) $('w-day').value=day; $('w-amount')?.focus();
+      return toast((WK==='income'?'Доход':'Расход')+' записан: '+sum(amount)+' сум');
+    }
+    if(f.id==='wedit-form'){
+      const body = {kind:$('we-kind').value, amount:Number($('we-amount').value.replace(/[^\d]/g,'')), category:$('we-cat').value, note:$('we-note').value, day:$('we-day').value};
+      await api('PATCH','/api/wallet/'+f.dataset.id, body); closeModal(); await loadWallet(); return toast('Сохранено');
+    }
+    if(f.id==='bud-form'){ await api('PUT','/api/wallet/budgets',{category:f.dataset.cat, amount:Number($('bud-amount').value.replace(/[^\d]/g,''))}); WBUD=null; await loadWallet(); return toast('Бюджет сохранён'); }
     if(f.id==='plan-form'){
       const body = {text:$('pf-text').value, day:$('pf-day').value, time:$('pf-time').value||null, note:$('pf-note').value, repeat:$('pf-repeat').value||null,
         until:$('pf-until').value, days:[...document.querySelectorAll('input[name=pf-wd]:checked')].map(x=>Number(x.value)), remind:$('pf-remind').checked, important:$('pf-imp').checked};
@@ -752,6 +879,7 @@ document.addEventListener('submit', async e => {
 });
 document.addEventListener('change', e => {
   const id = e.target.id;
+  if(id==='bud-add' && e.target.value){ WBUD = e.target.value; WAL.budgets[WBUD] = WAL.budgets[WBUD] || 0; render(); setTimeout(()=>$('bud-amount')?.focus(),20); return; }
   if(id==='f-who'){ F.who = e.target.value; return render(); }
   if(id==='i-dept') $('i-newdept-f').hidden = e.target.value!=='new';
   if(id==='e-dept') $('e-newdept-f').hidden = e.target.value!=='new';
@@ -764,7 +892,11 @@ document.addEventListener('change', e => {
   if(id==='switchco' || id==='switchco2'){ if(e.target.value==='new'){ S=null; return screenOnboard(true); } return (async()=>{ await api('POST','/api/switch',{memberId:Number(e.target.value)}); location.hash=''; ME = await api('GET','/api/me'); await reload(); shell(); render(); toast('Компания: '+S.company.name); })(); }
   if(id==='s-morning'||id==='s-evening'||id==='s-before') return act(()=>api('PATCH','/api/settings',{[id.slice(2)]: e.target.value}),'Настройка сохранена');
 });
+document.addEventListener('input', e => {
+  if(e.target.classList && e.target.classList.contains('w-amount')){ const d = e.target.value.replace(/[^\d]/g,''); e.target.value = d ? sum(Number(d)) : ''; }
+});
 document.addEventListener('keydown', e => {
+  if(e.key==='Enter' && e.target.dataset && e.target.dataset.wedit){ openWalletEdit(Number(e.target.dataset.wedit)); }
   if(e.key==='Escape') closeModal();
   if(e.key==='Enter' && e.target.dataset && e.target.dataset.pedit){ openPlanEdit(Number(e.target.dataset.pedit)); }
   if(e.key==='Enter' && e.target.dataset && e.target.dataset.hedit){ openHabit(Number(e.target.dataset.hedit)); }

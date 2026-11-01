@@ -417,6 +417,51 @@ app.patch('/api/members/:id', auth(), wrap(async (req, res) => {
   await db.q(`UPDATE members SET role=$1, dept_id=$2, title=$3, boss_id=$4, active=$5 WHERE id=$6`, [role, deptId, b.title !== undefined ? clean(b.title, 60) : m.title, bossId, active, m.id]);
   res.json({ ok: true });
 }));
+/* ---------- кошелёк (личный, видит только сам человек) ---------- */
+const W = require('./wallet');
+const isMonth = m => /^\d{4}-\d{2}$/.test(String(m || ''));
+app.get('/api/wallet', auth(false), wrap(async (req, res) => {
+  const uid = req.s.user.id, m = isMonth(req.query.month) ? req.query.month : W.monthOf(today());
+  const tx = await db.all(`SELECT id, kind, amount, category, note, day FROM wallet_tx WHERE user_id=$1 AND day >= $2 AND day < $3 ORDER BY day DESC, id DESC`, [uid, W.monthStart(m), W.monthStart(W.nextMonth(m))]);
+  const prev = await W.totals(uid, W.prevMonth(m));
+  const prevCats = await db.all(`SELECT category, sum(amount)::bigint AS s FROM wallet_tx WHERE user_id=$1 AND kind='expense' AND day >= $2 AND day < $3 GROUP BY category`, [uid, W.monthStart(W.prevMonth(m)), W.monthStart(m)]);
+  const budgets = await db.all(`SELECT category, amount FROM wallet_budgets WHERE user_id=$1`, [uid]);
+  const months = await db.all(`SELECT to_char(day,'YYYY-MM') AS m, kind, sum(amount)::bigint AS s FROM wallet_tx WHERE user_id=$1 AND day >= $2 GROUP BY 1,2 ORDER BY 1`, [uid, W.monthStart(W.prevMonth(W.prevMonth(W.prevMonth(W.prevMonth(W.prevMonth(m))))))]);
+  res.json({ month: m, today: today(), tx: tx.map(t => ({ ...t, amount: Number(t.amount) })), prev, prevCats: Object.fromEntries(prevCats.map(c => [c.category, Number(c.s)])),
+    budgets: Object.fromEntries(budgets.map(b => [b.category, Number(b.amount)])),
+    history: months.map(x => ({ m: x.m, kind: x.kind, s: Number(x.s) })),
+    cats: { expense: W.EXPENSE.map(c => ({ name: c[0], icon: c[1] })), income: W.INCOME.map(c => ({ name: c[0], icon: c[1] })) }, bot: tg.botUsername() });
+}));
+function walletBody(b) {
+  const kind = b.kind === 'income' ? 'income' : 'expense';
+  const amount = Math.round(Number(String(b.amount || '').replace(/[^\d.]/g, '')));
+  const category = (W.CATS[kind].includes(b.category) ? b.category : null) || W.guessCategory(b.note, kind);
+  return { kind, amount, category, note: clean(b.note, 200), day: isDate(b.day) ? b.day : today() };
+}
+app.post('/api/wallet', auth(false), wrap(async (req, res) => {
+  const f = walletBody(req.body);
+  if (!f.amount || f.amount <= 0 || f.amount > 1e12) return res.status(400).json({ error: 'Введите сумму' });
+  const r = await db.one(`INSERT INTO wallet_tx (user_id, kind, amount, category, note, day) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`, [req.s.user.id, f.kind, f.amount, f.category, f.note, f.day]);
+  res.json({ ok: true, id: r.id });
+}));
+app.patch('/api/wallet/:id', auth(false), wrap(async (req, res) => {
+  const f = walletBody(req.body);
+  if (!f.amount || f.amount <= 0) return res.status(400).json({ error: 'Введите сумму' });
+  await db.q(`UPDATE wallet_tx SET kind=$1, amount=$2, category=$3, note=$4, day=$5 WHERE id=$6 AND user_id=$7`, [f.kind, f.amount, f.category, f.note, f.day, Number(req.params.id), req.s.user.id]);
+  res.json({ ok: true });
+}));
+app.delete('/api/wallet/:id', auth(false), wrap(async (req, res) => {
+  await db.q(`DELETE FROM wallet_tx WHERE id=$1 AND user_id=$2`, [Number(req.params.id), req.s.user.id]);
+  res.json({ ok: true });
+}));
+app.put('/api/wallet/budgets', auth(false), wrap(async (req, res) => {
+  const cat = clean(req.body.category, 40), amount = Math.round(Number(req.body.amount) || 0);
+  if (!W.CATS.expense.includes(cat)) return res.status(400).json({ error: 'Неизвестная категория' });
+  if (amount > 0) await db.q(`INSERT INTO wallet_budgets (user_id, category, amount) VALUES ($1,$2,$3) ON CONFLICT (user_id, category) DO UPDATE SET amount=EXCLUDED.amount`, [req.s.user.id, cat, amount]);
+  else await db.q(`DELETE FROM wallet_budgets WHERE user_id=$1 AND category=$2`, [req.s.user.id, cat]);
+  res.json({ ok: true });
+}));
+
 /* ---------- демо-сотрудники: посмотреть процесс без настоящих людей ---------- */
 app.post('/api/demo', auth(), wrap(async (req, res) => {
   if (!L.isAdmin(req.me)) return res.status(403).json({ error: 'Только для руководства компании' });
