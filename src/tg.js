@@ -5,7 +5,7 @@ const { today, fmtDue } = require('./time');
 const TOKEN = process.env.BOT_TOKEN || '';
 const API = `https://api.telegram.org/bot${TOKEN}`;
 let BOT_USERNAME = process.env.BOT_USERNAME || '';
-const handlers = { done: null, extend: null, transcribe: null, reply: null, assist: null, callback: null };   // заполняются logic.js и assistant.js
+const handlers = { done: null, extend: null, transcribe: null, reply: null, assist: null, callback: null, aiGate: null, aiUsage: null, feature: null };   // заполняются logic.js и assistant.js
 
 const appUrl = () => process.env.APP_URL || (process.env.RAILWAY_PUBLIC_DOMAIN ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}` : '');
 const enabled = () => Boolean(TOKEN);
@@ -72,8 +72,10 @@ async function onMessage(m) {
   if (media) {
     if (!handlers.transcribe) return send(chat, '🎙 Голосовые пока не подключены: в настройках сервера нужно добавить ключ ИИ (OPENAI_API_KEY). Текстом всё работает.', { open: false });
     if ((media.duration || 0) > 300) return send(chat, '🎙 Голосовое длиннее 5 минут — разбейте, пожалуйста, на части.', { open: false });
+    const gate = handlers.aiGate && await handlers.aiGate(user, { voiceSec: media.duration || 0 });
+    if (gate) return send(chat, gate, { open: false });
     call('sendChatAction', { chat_id: chat, action: 'typing' });
-    try { text = await handlers.transcribe(await download(media.file_id), user); }
+    try { text = await handlers.transcribe(await download(media.file_id), user); if (handlers.aiUsage) await handlers.aiUsage(user, { sec: media.duration || 0 }); }
     catch (e) { console.warn('[ai] stt', e.message); return send(chat, '😕 Не удалось распознать голосовое. Попробуйте ещё раз или напишите текстом.', { open: false }); }
     if (!text) return send(chat, '😕 Не расслышал. Попробуйте ещё раз или напишите текстом.', { open: false });
     voice = true;
@@ -106,12 +108,15 @@ async function onMessage(m) {
 
   // Кошелёк: «45000 такси» — записать расход, «+5 000 000 зарплата» — доход
   const W = require('./wallet');
+  const canWallet = !handlers.feature || await handlers.feature(user, 'wallet');
+  const LOCKED = f => `🔒 «${f}» не подключён. Попросите руководителя подключить его вам в разделе «Команда».`;
+  if (text.startsWith('/wallet') && !canWallet) return send(chat, LOCKED('Кошелёк'), { open: false });
   if (text.startsWith('/wallet')) {
     const m = W.monthOf(today()), t = await W.totals(user.id, m);
     const top = await db.all(`SELECT category, sum(amount)::bigint AS s FROM wallet_tx WHERE user_id=$1 AND kind='expense' AND day >= $2 GROUP BY category ORDER BY 2 DESC LIMIT 5`, [user.id, W.monthStart(m)]);
     return send(chat, `👛 Кошелёк за ${W.monthName(m)}\n\nРасходы: ${W.fmtSum(t.expense)}\nДоходы: ${W.fmtSum(t.income)}\nОстаток: ${W.fmtSum(t.income - t.expense)}${top.length ? '\n\nБольше всего:\n' + top.map(x => '• ' + x.category + ' — ' + W.fmtSum(x.s)).join('\n') : ''}\n\nЧтобы записать расход, просто напишите сумму и на что: «45000 такси».`, { path: '/#wallet' });
   }
-  const q = !text.startsWith('/') && W.parseQuick(text);
+  const q = canWallet && !text.startsWith('/') && W.parseQuick(text);
   if (q) {
     const r = await db.one(`INSERT INTO wallet_tx (user_id, kind, amount, category, note, day) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`, [user.id, q.kind, q.amount, q.category, q.note, today()]);
     const t = await W.totals(user.id, W.monthOf(today()));
@@ -131,6 +136,7 @@ async function onMessage(m) {
     const lines = tasks.map(t => `${t.due < t0 ? '🔴' : t.due === t0 ? '🟠' : '▫️'} ${t.title} — ${t.due < t0 ? 'просрочено' : 'до ' + fmtDue(t.due)}`);
     return send(chat, `📋 Ваши задачи (${tasks.length})\n\n${lines.join('\n')}`, { path: '/#tasks' });
   }
+  if (text.startsWith('/plan') && handlers.feature && !(await handlers.feature(user, 'plans'))) return send(chat, LOCKED('Мои планы'), { open: false });
   if (text.startsWith('/plan')) {
     const items = await db.all(`SELECT * FROM plan_items WHERE user_id=$1 AND day=$2 ORDER BY time NULLS LAST, id`, [user.id, today()]);
     if (!items.length) return send(chat, 'На сегодня план пуст. Добавьте пункты на сайте в разделе «Мои планы».', { path: '/#plans' });

@@ -4,6 +4,7 @@ const db = require('./db');
 const tg = require('./tg');
 const ai = require('./ai');
 const L = require('./logic');
+const B = require('./billing');
 const W = require('./wallet');
 const { today, nowLocal, addDays, fmtDue, parts } = require('./time');
 
@@ -64,8 +65,10 @@ function draftButtons(id, d, team) {
 async function handle({ chat, user, text, voice }) {
   const ms = await memberships(user.id);
   if (voice) await tg.send(chat, `🎙 «${text}»`, { open: false });
+  const gate = await B.aiGate(user.id);
+  if (gate) return tg.send(chat, gate, { open: false });
   let res;
-  try { res = await understand(user, text, ms); }
+  try { res = await understand(user, text, ms); await B.addUsage(user.id, { msgs: 1 }); }
   catch (e) { console.warn('[ai]', e.message); return tg.send(chat, '😕 ИИ сейчас недоступен. Попробуйте позже или воспользуйтесь сайтом.', { open: false }); }
   const { items, team } = res;
   if (!items.length) return tg.send(chat, 'Не понял, что сделать 🤔\nПримеры: «Мадине до пятницы подготовить отчёт», «потратил 45 тысяч на такси», «напомни завтра в 9 позвонить в банк».', { open: false });
@@ -80,6 +83,10 @@ async function handle({ chat, user, text, voice }) {
           remind: /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(it.remind_at || '') && it.remind_at > nowLocal() ? it.remind_at : null, voice };
         const r = await db.one(`INSERT INTO ai_drafts (user_id, data) VALUES ($1,$2) RETURNING id`, [user.id, d]);
         await tg.send(chat, draftText(d, team, ms.length > 1), { open: false, buttons: draftButtons(r.id, d, team) });
+      } else if ((it.type === 'expense' || it.type === 'income' || it.type === 'wallet_summary') && !(await B.hasFeature(user.id, 'wallet'))) {
+        notes.push('🔒 «Кошелёк» не подключён — попросите руководителя подключить его в разделе «Команда».');
+      } else if (it.type === 'plan' && !(await B.hasFeature(user.id, 'plans'))) {
+        notes.push('🔒 «Мои планы» не подключены — попросите руководителя подключить их в разделе «Команда».');
       } else if (it.type === 'expense' || it.type === 'income') {
         const kind = it.type, amount = Math.round(Number(it.amount) || 0);
         if (!(amount > 0 && amount < 1e12)) { notes.push('Не понял сумму — напишите, например: «45000 такси».'); continue; }
@@ -181,6 +188,9 @@ async function callback(cq) {
 }
 
 tg.handlers.reply = reply;
+tg.handlers.aiGate = (user, o) => B.aiGate(user.id, o);
+tg.handlers.aiUsage = (user, o) => B.addUsage(user.id, o);
+tg.handlers.feature = (user, f) => B.hasFeature(user.id, f);
 tg.handlers.callback = callback;
 if (ai.enabled()) {
   tg.handlers.assist = handle;

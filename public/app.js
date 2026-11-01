@@ -2,6 +2,7 @@
 (function () {
 'use strict';
 const ICON = {
+  admin:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8 3v6c0 4.5-3.4 8.3-8 9-4.6-.7-8-4.5-8-9V6z"/><path d="M9 12l2 2 4-4"/></svg>',
   wallet:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 7V5a2 2 0 00-2-2H5a2 2 0 00-2 2v14a2 2 0 002 2h12a2 2 0 002-2v-2"/><path d="M21 9h-6a3 3 0 000 6h6z"/><circle cx="16" cy="12" r=".8" fill="currentColor"/></svg>',
   overview:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="7" height="9" rx="2"/><rect x="14" y="3" width="7" height="5" rx="2"/><rect x="14" y="12" width="7" height="9" rx="2"/><rect x="3" y="16" width="7" height="5" rx="2"/></svg>',
   tasks:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6h11M9 12h11M9 18h11"/><path d="M4 6l1 1 2-2M4 12l1 1 2-2M4 18l1 1 2-2"/></svg>',
@@ -145,6 +146,10 @@ function screenOnboard(another){
 
 /* ---------- навигация ---------- */
 function routes(){
+  const adm = S && S.billing && S.billing.platformAdmin ? [['admin','Админка']] : [];
+  return [...baseRoutes(), ...adm];
+}
+function baseRoutes(){
   return isMgr()
     ? [['overview','Обзор'],['tasks','Задачи'],['plans','Мои планы'],['wallet','Кошелёк'],['team','Команда'],['alerts','Уведомления']]
     : [['tasks','Мои задачи'],['plans','Мои планы'],['wallet','Кошелёк'],['team','Команда'],['alerts','Уведомления']];
@@ -155,6 +160,7 @@ const AREA = {
   tasks:()=>isMgr()?['Задачи', `${scopeTasks().filter(t=>t.status!=='done').length} в работе · ${scopeTasks().filter(late).length} просрочено`]:['Задачи', `${S.tasks.filter(t=>t.assignee===S.me&&t.status!=='done').length} в работе`],
   plans:()=>['Планы', 'личный план и привычки'],
   wallet:()=>['Кошелёк', 'личные расходы — видите только вы'],
+  admin:()=>['Админка', 'оплаты и тарифы клиентов'],
   team:()=>['Люди', `${S.users.length} в компании`],
   alerts:()=>['Бот', myUnread()?`${myUnread()} новых сообщений`:'все сообщения прочитаны']
 };
@@ -430,6 +436,7 @@ function vTasks(){
 /* ---------- планы ---------- */
 let DAY = null;
 function vPlans(){
+  if(!feat('plans')) return lockView('plans');
   DAY = DAY || TODAY;
   const items = plansFor(S.me, DAY), p = planPct(S.me, DAY);
   const days = Array.from({length:7},(_,i)=>addDays(TODAY,i-6));
@@ -467,6 +474,7 @@ function vTeam(){
   const hasDemo = S.users.some(u=>u.demo);
   const demoBtn = isOwner() ? (hasDemo ? `<button class="btn" data-act="demo-del">Удалить демо</button>` : `<button class="btn" data-act="demo-add">Добавить демо-сотрудников</button>`) : '';
   return header('Команда<span>›</span>Люди', 'Команда', demoBtn + (isMgr()?`<button class="btn primary" data-act="invite">${ICON.plus}Пригласить</button>`:'')) +
+    (isOwner() ? billingCard() : '') +
     (isOwner() && hasDemo ? `<div class="card demo-note"><b>Демо-режим.</b> Нажмите «Войти как» у демо-сотрудника, чтобы увидеть «Орбиту» его глазами: его задачи, план, отметки. Демо-сотрудникам уведомления в Telegram не уходят.</div>` : '') +
     `<div class="grid team">${list.map(u=>{
     const mine=S.tasks.filter(t=>t.assignee===u.id), a=mine.filter(t=>t.status!=='done').length, od=mine.filter(late).length, dn=mine.filter(t=>t.status==='done').length;
@@ -475,6 +483,7 @@ function vTeam(){
       ${vis(u.id)?`<div class="stats"><div><b class="num">${a}</b><small>в работе</small></div><div><b class="num" style="color:${od?'var(--bad)':'inherit'}">${od}</b><small>просрочено</small></div><div><b class="num">${dn}</b><small>готово</small></div></div>
       <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--muted);margin-bottom:6px"><span>План дня</span><span class="num" style="color:var(--ink);font-weight:700">${p==null?'—':p+'%'}</span></div>
       <div class="bar"><i style="width:${p||0}%"></i></div>`:'<p class="note">Задачи этого сотрудника видит его руководитель.</p>'}
+      ${isOwner() && !u.admin && !u.demo ? `<div class="addons"><span>Подключено:</span><button class="addon on" disabled title="Задачи и бот — входят всегда">✓ Задачи</button><button class="addon ${u.plansOn?'on':''}" data-addon="${u.id}|plansOn">${u.plansOn?'✓ ':'+ '}Мои планы</button><button class="addon ${u.walletOn?'on':''}" data-addon="${u.id}|walletOn">${u.walletOn?'✓ ':'+ '}Кошелёк</button></div>` : ''}
       <div style="display:flex;justify-content:space-between;align-items:center;margin-top:14px;gap:8px;flex-wrap:wrap">${u.demo?'<span class="chip s-review">Демо</span>':`<span class="chip ${u.tg?'s-progress':'s-new'}">${u.tg?'Telegram подключён':'Уведомления выключены'}</span>`}
       <span style="display:flex;gap:6px;flex-wrap:wrap">${u.demo&&isOwner()?`<button class="btn sm primary" data-act="viewas" data-id="${u.id}">Войти как</button>`:''}${isOwner()&&u.id!==S.me?`<button class="btn sm" data-act="editm" data-id="${u.id}">Изменить</button>`:''}${vis(u.id)&&u.id!==S.me&&isMgr()?`<button class="btn sm" data-act="new" data-for="${u.id}">${ICON.plus}Задача</button>`:''}</span></div></div>`; }).join('')}</div>`;
 }
@@ -499,12 +508,80 @@ function vAlerts(){
         <div class="set"><div>Новая задача от руководителя</div><button class="switch ${st.onAssign!==false?'on':''}" data-sw="onAssign" aria-label="Новая задача" aria-pressed="${st.onAssign!==false}"></button></div>
         <div class="set"><div>${isMgr()?'Сотрудник выполнил задачу, комментарии':'Изменения и комментарии по моим задачам'}</div><button class="switch ${st.onDone!==false?'on':''}" data-sw="onDone" aria-label="Выполнение" aria-pressed="${st.onDone!==false}"></button></div>
       </div>
+      ${aiCard()}
       <div class="card"><div class="card-h"><div><h3>Профиль</h3><p>${esc(me().name)} · ${esc(S.company.name)}</p></div></div>
         <div class="field"><label for="switchco2">Компания</label>${coSwitch('switchco2')}</div><div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn sm" data-act="profile">Изменить имя${isOwner()?' и компанию':''}</button><button class="btn sm" data-act="logout">Выйти</button></div></div>
     </div>
   </div>`;
 }
 
+
+
+/* ---------- тарифы ---------- */
+const B_ = () => (S && S.billing) || {};
+const feat = f => !B_().features || B_().features[f] !== false;
+const money = n => sum(n) + ' сум';
+const payText = () => B_().pay ? `Оплата: ${esc(B_().pay)}` : 'Для оплаты напишите администратору «Орбиты».';
+function lockView(f){
+  const name = f==='plans' ? 'Мои планы' : 'Кошелёк';
+  const what = f==='plans' ? 'личный план на день, привычки, напоминания в Telegram' : 'учёт личных расходов и доходов, дашборд за месяц, запись голосом через бота';
+  return header(name, name, '') + `<div class="card lock"><div class="lock-ic">🔒</div><h3>«${name}» пока не подключён</h3>
+    <p>${what}.</p><p>Подключает руководитель компании в разделе «Команда» — <b>${money(12000)}</b> в месяц за сотрудника.</p>
+    <p class="note">Задачи, комментарии и уведомления работают как обычно.</p></div>`;
+}
+function billingCard(){
+  const c = B_().company; if(!c) return '';
+  const status = c.paid ? `<span class="chip s-done">Оплачено до ${fmt(c.paidUntil)}</span>` : c.inTrial ? `<span class="chip s-progress">Пробный период до ${fmt(c.trialUntil)}</span>` : `<span class="chip s-late">Не оплачено</span>`;
+  return `<div class="card bill"><div class="card-h"><div><h3>Тариф и счёт</h3><p>Руководство — бесплатно. Платите только за работников и подключённые разделы.</p></div>${status}</div>
+    <div class="bill-grid">
+      <div class="bill-lines">${c.lines.length ? c.lines.map(l=>`<div><span>${esc(l.name)} × ${l.n}</span><span class="num">${money(l.total)}</span></div>`).join('') : '<div class="note">Работников пока нет — счёт 0 сум. Пригласите сотрудников, чтобы ставить им задачи.</div>'}
+        <div class="bill-total"><span>Итого в месяц</span><b class="num">${money(c.sum)}</b></div></div>
+      <div class="bill-info"><div>👤 Работник — <b>${money(12000)}</b>: задачи, бот, ИИ-помощник (20 мин голоса)</div><div>🗓 «Мои планы» — <b>+${money(12000)}</b></div><div>👛 «Кошелёк» — <b>+${money(12000)}</b></div>
+        <div class="note">${c.inTrial ? 'В пробный период всё включено для всех. ' : ''}${!c.active ? 'Пока счёт не оплачен, у работников отключены ИИ, «Мои планы» и «Кошелёк» — задачи работают. ' : ''}${payText()}</div></div>
+    </div></div>`;
+}
+function aiCard(){
+  const a = B_().ai; if(!a) return '';
+  const SRC = {trial:'Пробный месяц', solo:'ИИ-помощник оплачен', lead:'Входит в тариф компании', worker:'Входит в тариф компании'};
+  const pm = a.limitMin ? Math.min(100, a.usedMin/a.limitMin*100) : 0, pq = a.limitMsgs ? Math.min(100, a.usedMsgs/a.limitMsgs*100) : 0;
+  const sub = a.on ? (a.src==='trial' ? (a.trialStarted ? `до ${fmt(a.trialEnds)}` : 'начнётся с первого голосового') : a.src==='solo' ? `до ${fmt(a.paidUntil)}` : esc(a.company||'')) : 'выключен';
+  return `<div class="card"><div class="card-h"><div><h3>🤖 ИИ-помощник</h3><p>${a.on ? SRC[a.src] : 'Не активен'} · ${sub}</p></div>${a.on?'<span class="chip s-done">Включён</span>':'<span class="chip s-new">Выключен</span>'}</div>
+    ${a.on ? `<div class="aiu"><div><span>Голосовые</span><span class="num">${String(a.usedMin).replace('.',',')} из ${a.limitMin} мин</span></div><div class="bar"><i style="width:${pm}%;background:${pm>90?'var(--bad)':'var(--blue)'}"></i></div>
+      <div><span>Сообщения ИИ</span><span class="num">${a.usedMsgs} из ${a.limitMsgs}</span></div><div class="bar"><i style="width:${pq}%;background:${pq>90?'var(--bad)':'var(--blue)'}"></i></div></div>
+      <p class="note" style="margin-top:8px">Лимит обновляется 1-го числа.${a.src==='trial'?` После пробного месяца — ${money(a.price.solo)} в месяц.`:''}</p>`
+    : `<p style="margin:0 0 6px">Голосом: «Мадине до завтра подготовить отчёт», «потратил 50 тысяч на такси».</p><p class="note">${a.trialStarted?'Пробный месяц закончился. ':''}ИИ-помощник — <b>${money(a.price.solo)}</b> в месяц (60 мин голоса, 500 сообщений). В команде ИИ входит в тариф компании. ${payText()}</p>`}
+  </div>`;
+}
+/* ---------- админка платформы ---------- */
+let ADM = null, ADQ = '', ADF = [];
+async function loadAdmin(){ try { ADM = await api('GET','/api/admin/overview'); } catch(e){ ADM = {error:e.message}; } if(current()==='admin') render(); }
+function vAdmin(){
+  if(!ADM) return header('Админка','Админка','') + '<div class="card empty">Загружаю…</div>';
+  if(ADM.error) return header('Админка','Админка','') + `<div class="card empty">${esc(ADM.error)}</div>`;
+  const total = ADM.companies.filter(c=>c.paid).reduce((a,c)=>a+c.sum,0);
+  return header('Админка','Админка', '<button class="btn" data-act="adm-reload">Обновить</button>') + `
+  <div class="grid kpis">
+    <div class="card kpi hero"><div class="lab"><span class="ic">${ICON.admin}</span>Компаний</div><div class="row"><div><div class="v num">${ADM.companies.length}</div><div class="sub">${ADM.companies.filter(c=>c.paid).length} оплачено · ${ADM.companies.filter(c=>c.inTrial).length} на пробном</div></div></div></div>
+    <div class="card kpi"><div class="lab"><span class="ic">${ICON.done}</span>Работников в счетах</div><div class="row"><div><div class="v num">${ADM.companies.reduce((a,c)=>a+c.workers,0)}</div><div class="sub">единица = ${money(ADM.price.unit)}</div></div></div></div>
+    <div class="card kpi"><div class="lab"><span class="ic">${ICON.wallet}</span>Оплаченные счета / мес</div><div class="row"><div><div class="v num">${sumC(total)}</div><div class="sub">сум, компании</div></div></div></div>
+    <div class="card kpi"><div class="lab"><span class="ic">${ICON.flame}</span>ИИ у одиночек</div><div class="row"><div><div class="v num">${ADM.users.filter(u=>u.src==='solo').length}</div><div class="sub">оплачено · ${ADM.users.filter(u=>u.src==='trial').length} на пробном</div></div></div></div>
+  </div>
+  <div class="card" style="margin-top:16px"><div class="card-h"><div><h3>Компании</h3><p>Отметьте оплату после получения денег — срок продлится от текущей даты окончания</p></div></div>
+    <div class="tblw"><table class="tbl"><thead><tr><th>Компания</th><th>Владелец</th><th class="n">Работн.</th><th class="n">Планы</th><th class="n">Кошел.</th><th class="n">Счёт / мес</th><th>Статус</th><th></th></tr></thead><tbody>
+    ${ADM.companies.map(c=>`<tr><td><b>${esc(c.name)}</b></td><td>${esc(c.owner||'—')}${c.ownerUsername?` <a href="https://t.me/${esc(c.ownerUsername)}" target="_blank" rel="noopener">@${esc(c.ownerUsername)}</a>`:''}</td><td class="n num">${c.workers}</td><td class="n num">${c.plans}</td><td class="n num">${c.wallet}</td><td class="n num"><b>${sum(c.sum)}</b></td>
+      <td>${c.paid?`<span class="chip s-done">до ${fmt(c.paidUntil)}</span>`:c.inTrial?`<span class="chip s-progress">пробный до ${fmt(c.trialUntil)}</span>`:'<span class="chip s-late">не оплачено</span>'}</td>
+      <td><button class="btn sm" data-admpay="company|${c.id}|1">+1 мес</button> <button class="btn sm" data-admpay="company|${c.id}|12">+год</button></td></tr>`).join('') || '<tr><td colspan="8" class="note">Компаний пока нет</td></tr>'}</tbody></table></div></div>
+  <div class="grid low-grid">
+    <div class="card"><div class="card-h"><div><h3>ИИ-помощник у пользователей</h3><p>${money(ADM.price.solo)} / мес · пакет +60 мин — ${money(ADM.price.pack)}</p></div></div>
+      <form class="add" id="adm-find" style="margin-bottom:10px"><input id="adm-q" value="${esc(ADQ)}" placeholder="Найти по имени или @username" autocomplete="off"><button class="btn" type="submit">Найти</button></form>
+      ${ADF.length?`<div class="note" style="margin-bottom:6px">Найдено:</div>${ADF.map(u=>`<div class="wrow" style="cursor:default"><div style="flex:1;min-width:0"><b>${esc(u.name)}</b><small>${u.username?'@'+esc(u.username):''} ${u.ai_paid_until?'· оплачено до '+fmt(u.ai_paid_until):''}</small></div><button class="btn sm" data-admpay="ai|${u.id}|1">ИИ +1 мес</button></div>`).join('')}`:''}
+      <div class="tblw"><table class="tbl"><thead><tr><th>Пользователь</th><th>Доступ</th><th class="n">Голос</th><th class="n">Сообщ.</th><th></th></tr></thead><tbody>
+      ${ADM.users.map(u=>`<tr><td><b>${esc(u.name)}</b>${u.username?`<br><small class="note">@${esc(u.username)}</small>`:''}</td><td>${u.src==='solo'?`оплачено до ${fmt(u.paidUntil)}`:u.src==='trial'?`пробный до ${fmt(u.trialEnds)}`:u.src?'через компанию':'<span style="color:var(--bad)">нет</span>'}</td>
+        <td class="n num">${String(u.usedMin).replace('.',',')}/${u.limitMin}</td><td class="n num">${u.usedMsgs}/${u.limitMsgs}</td><td style="white-space:nowrap"><button class="btn sm" data-admpay="ai|${u.id}|1">+1 мес</button> <button class="btn sm" data-admpay="pack|${u.id}|1">+60 мин</button></td></tr>`).join('') || '<tr><td colspan="5" class="note">Пока никто не пользовался ИИ</td></tr>'}</tbody></table></div></div>
+    <div class="card"><div class="card-h"><div><h3>Последние оплаты</h3><p>Журнал отметок</p></div></div>
+      ${ADM.payments.length?ADM.payments.map(p=>`<div class="wrow" style="cursor:default"><div style="flex:1;min-width:0"><b>${esc(p.company||p.user||'—')}</b><small>${p.kind==='company'?'Тариф компании':p.kind==='ai'?'ИИ-помощник':'Пакет +60 мин'}${p.months?' · '+p.months+' мес':''} · ${fmtDT(String(p.at).slice(0,16))}</small></div><b class="num">${sum(p.amount)}</b></div>`).join(''):'<div class="empty">Оплат пока нет</div>'}</div>
+  </div>`;
+}
 
 /* ---------- кошелёк ---------- */
 let WAL = null, WM = null, WK = 'expense', WCAT = '', WBUD = null;
@@ -544,6 +621,7 @@ function trend(hist, m){
   <div class="legend" style="justify-content:flex-start"><i style="background:#1F9D74"></i> доходы <i style="background:#2F55E4;margin-left:10px"></i> расходы</div>`;
 }
 function vWallet(){
+  if(!feat('wallet')) return lockView('wallet');
   WM = WM || TODAY.slice(0,7);
   const nav = `<div class="daynav"><button data-act="wm-" aria-label="Предыдущий месяц">‹</button><span style="min-width:120px">${mLabel(WM)}</span><button data-act="wm+" aria-label="Следующий месяц">›</button></div>`;
   if(!WAL || WAL.month!==WM) return header('Кошелёк', 'Мой кошелёк', nav) + `<div class="card empty">Загружаю…</div>`;
@@ -753,8 +831,9 @@ function render(){
   if(!$('nav')) shell();
   renderNav();
   const r = current();
-  $('main').innerHTML = {overview:vOverview, tasks:vTasks, plans:vPlans, wallet:vWallet, team:vTeam, alerts:vAlerts}[r]();
-  if(r==='wallet' && (!WAL || WAL.month!==WM)) loadWallet();
+  $('main').innerHTML = {overview:vOverview, tasks:vTasks, plans:vPlans, wallet:vWallet, team:vTeam, alerts:vAlerts, admin:vAdmin}[r]();
+  if(r==='wallet' && feat('wallet') && (!WAL || WAL.month!==WM)) loadWallet();
+  if(r==='admin' && !ADM) loadAdmin();
   if(r==='overview') startConstellation(false); else cancelAnimationFrame(raf);
   if(r==='alerts' && S.notifs.some(n=>!n.read)) setTimeout(()=>api('POST','/api/notifs/read').catch(()=>{}), 4000);
 }
@@ -772,9 +851,14 @@ async function boot(){
 
 /* ---------- события ---------- */
 document.addEventListener('click', e => {
-  const el = e.target.closest('[data-ext],[data-wk],[data-wcat],[data-wedit],[data-wdel],[data-bud],[data-act],[data-open],[data-tick],[data-plan],[data-pdel],[data-pedit],[data-hedit],[data-hdel],[data-hab],[data-status],[data-close],[data-delete],[data-sw],[data-cf],[data-view],[data-mode]');
+  const el = e.target.closest('[data-addon],[data-admpay],[data-ext],[data-wk],[data-wcat],[data-wedit],[data-wdel],[data-bud],[data-act],[data-open],[data-tick],[data-plan],[data-pdel],[data-pedit],[data-hedit],[data-hdel],[data-hab],[data-status],[data-close],[data-delete],[data-sw],[data-cf],[data-view],[data-mode]');
   if(!el) return;
   if(el.dataset.close && e.target !== el && !e.target.closest('button[data-close]')) return;
+  if(el.dataset.addon){ const [id,k] = el.dataset.addon.split('|'); const u = U(Number(id)); const on = !u[k];
+    return act(()=>api('PATCH','/api/members/'+id,{[k]:on}), `${k==='plansOn'?'«Мои планы»':'«Кошелёк»'} ${on?'подключён':'отключён'} — ${u.name}`); }
+  if(el.dataset.admpay){ const [kind,id,m] = el.dataset.admpay.split('|');
+    if(el.dataset.confirm!=='1'){ el.dataset.confirm='1'; el.textContent='Деньги получены?'; return; }
+    return (async()=>{ try { if(kind==='company') await api('POST',`/api/admin/company/${id}/paid`,{months:Number(m)}); else await api('POST',`/api/admin/user/${id}/ai`, kind==='pack'?{pack:true}:{months:Number(m)}); ADM=null; ADF=[]; toast('Оплата отмечена'); await reload(); await loadAdmin(); } catch(err){ toast(err.message); } })(); }
   if(el.dataset.ext){ const [id,code] = el.dataset.ext.split('|'); return (async()=>{ try { const r = await api('POST','/api/tasks/'+id+'/extend',{code}); await reload(); render(); openTask(Number(id)); toast('Срок продлён до '+r.label+' — исполнитель получит уведомление'); } catch(err){ toast(err.message); } })(); }
   if(el.dataset.wk){ WK = el.dataset.wk; WCAT=''; const a=$('w-amount')?.value, n=$('w-note')?.value; render(); if($('w-amount')){ $('w-amount').value=a||''; $('w-note').value=n||''; } return; }
   if(el.dataset.wcat){ WCAT = WCAT===el.dataset.wcat ? '' : el.dataset.wcat; document.querySelectorAll('.wcat').forEach(b=>b.classList.toggle('on', b.dataset.wcat===WCAT)); return; }
@@ -810,6 +894,7 @@ document.addEventListener('click', e => {
   if(a==='editm') return openEditMember(Number(el.dataset.id));
   if(a==='profile') return openProfile();
   if(a==='deactivate'){ if(el.dataset.confirm!=='1'){ el.dataset.confirm='1'; el.textContent='Точно убрать?'; return; } closeModal(); return act(()=>api('PATCH','/api/members/'+el.dataset.id,{active:false}),'Сотрудник убран из команды'); }
+  if(a==='adm-reload'){ ADM=null; render(); return loadAdmin(); }
   if(a==='wm-'){ WM = mShift(WM,-1); WAL=null; render(); return loadWallet(); }
   if(a==='wm+'){ WM = mShift(WM,1); WAL=null; render(); return loadWallet(); }
   if(a==='day-'){ DAY=addDays(DAY,-1); return render(); }
@@ -835,6 +920,7 @@ document.addEventListener('submit', async e => {
       closeModal(); await reload(); render(); return toast(Number(who)!==S.me ? `Задача поставлена — ${U(Number(who)).name} получит уведомление` : 'Задача добавлена');
     }
     if(f.id==='add-plan'){ const v=$('plan-text').value.trim(); if(!v) return; await api('POST','/api/plans',{day:DAY,text:v}); await reload(); render(); $('plan-text')?.focus(); return; }
+    if(f.id==='adm-find'){ ADQ=$('adm-q').value.trim(); ADF = ADQ ? await api('GET','/api/admin/find-user?q='+encodeURIComponent(ADQ)) : []; if(!ADF.length) toast('Никого не нашёл'); return render(); }
     if(f.id==='ext-form'){ const id=Number(f.dataset.id); const r = await api('POST','/api/tasks/'+id+'/extend',{due:$('ext-due').value, dueTime:$('ext-time').value||null}); await reload(); render(); openTask(id); return toast('Срок продлён до '+r.label); }
     if(f.id==='wallet-form'){
       const amount = Number($('w-amount').value.replace(/[^\d]/g,''));

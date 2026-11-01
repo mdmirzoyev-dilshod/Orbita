@@ -313,6 +313,20 @@ button{cursor:pointer}
 .viewbar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;background:var(--navy);color:var(--navy-ink);border-radius:14px;padding:10px 14px;margin-bottom:14px;font-size:13px}
 .viewbar .btn{margin-left:auto}
 .demo-note{margin-bottom:16px;background:var(--warn-soft);box-shadow:none;font-size:13px}
+.bill{margin-bottom:16px}
+.bill-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:18px}
+.bill-lines div{display:flex;justify-content:space-between;gap:10px;padding:7px 0;border-bottom:1px dashed var(--line);font-size:14px}
+.bill-lines .bill-total{border:0;padding-top:10px;font-size:15px}.bill-total b{font-size:20px}
+.bill-info{display:flex;flex-direction:column;gap:6px;font-size:13.5px;background:var(--soft);border-radius:14px;padding:12px 14px}
+.addons{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:12px;font-size:12px;color:var(--muted)}
+.addon{border:1px dashed var(--line);background:#fff;border-radius:20px;padding:4px 10px;font-size:12px;font-weight:600;color:var(--muted)}
+.addon.on{border-style:solid;border-color:#BFE8D6;background:#E9F8F1;color:#147A55}
+.addon[disabled]{opacity:.8;cursor:default}
+.lock{text-align:center;padding:40px 24px;max-width:560px;margin:0 auto}.lock-ic{font-size:40px}.lock h3{margin:8px 0}
+.aiu div{display:flex;justify-content:space-between;font-size:13px;margin:8px 0 5px}
+.aiu .bar{margin:0}
+.tblw{overflow-x:auto}
+.chip.s-late{background:#FDECEA;color:var(--bad)}
 .extbox{border:1px solid var(--line);background:var(--soft);border-radius:14px;padding:12px 14px;margin:4px 0 12px}
 .extbox.late{background:#FDECEA;border-color:#F6C9C4}
 .extbox.late label{color:var(--bad)}
@@ -377,7 +391,7 @@ button{cursor:pointer}
 .tabbar{display:none}
 @media (max-width:1100px){
   .kpis{grid-template-columns:repeat(2,minmax(0,1fr))}
-  .ov-grid,.low-grid,.plans,.alerts,.w-grid,.w-bars{grid-template-columns:minmax(0,1fr)}
+  .ov-grid,.low-grid,.plans,.alerts,.w-grid,.w-bars,.bill-grid{grid-template-columns:minmax(0,1fr)}
   .search{min-width:0}
 }
 @media (max-width:760px){

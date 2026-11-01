@@ -197,6 +197,25 @@ CREATE TABLE IF NOT EXISTS ai_drafts (
   used        BOOLEAN NOT NULL DEFAULT false,
   created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+CREATE TABLE IF NOT EXISTS ai_usage (
+  user_id     INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  month       TEXT NOT NULL,
+  voice_sec   INT NOT NULL DEFAULT 0,
+  msgs        INT NOT NULL DEFAULT 0,
+  extra_min   INT NOT NULL DEFAULT 0,
+  PRIMARY KEY (user_id, month)
+);
+CREATE TABLE IF NOT EXISTS payments (
+  id          SERIAL PRIMARY KEY,
+  kind        TEXT NOT NULL,
+  company_id  INT REFERENCES companies(id) ON DELETE SET NULL,
+  user_id     INT REFERENCES users(id) ON DELETE SET NULL,
+  months      INT NOT NULL DEFAULT 0,
+  amount      BIGINT NOT NULL DEFAULT 0,
+  note        TEXT NOT NULL DEFAULT '',
+  by_user     INT REFERENCES users(id) ON DELETE SET NULL,
+  at          TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 CREATE TABLE IF NOT EXISTS wallet_budgets (
   user_id     INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   category    TEXT NOT NULL,
@@ -230,6 +249,9 @@ async function migrate() {
            AND p.time IS NOT DISTINCT FROM p2.time AND p.id > p2.id`);
   for (const col of ["due_time TEXT", "overdue_sent BOOLEAN NOT NULL DEFAULT false", "extended INT NOT NULL DEFAULT 0"])
     await q(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS ${col}`);
+  for (const col of ["ai_trial_start DATE", "ai_paid_until DATE", "ai_trial_notified BOOLEAN NOT NULL DEFAULT false"]) await q(`ALTER TABLE users ADD COLUMN IF NOT EXISTS ${col}`);
+  for (const col of ["plans_on BOOLEAN NOT NULL DEFAULT false", "wallet_on BOOLEAN NOT NULL DEFAULT false"]) await q(`ALTER TABLE members ADD COLUMN IF NOT EXISTS ${col}`);
+  await q(`ALTER TABLE companies ADD COLUMN IF NOT EXISTS paid_until DATE`);
   await q(`ALTER TABLE users ADD COLUMN IF NOT EXISTS demo BOOLEAN NOT NULL DEFAULT false`);
   await q(`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS back_token TEXT`);
   await q(`ALTER TABLE members DROP CONSTRAINT IF EXISTS members_role_check`);

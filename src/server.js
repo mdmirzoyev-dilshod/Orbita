@@ -8,6 +8,7 @@ const db = require('./db');
 const tg = require('./tg');
 const L = require('./logic');
 require('./assistant');   // голосовые и свободный текст в боте (ИИ)
+const B = require('./billing');
 const { today, nowLocal, addDays, fmtDue } = require('./time');
 
 const app = express();
@@ -199,7 +200,7 @@ app.get('/api/state', auth(), wrap(async (req, res) => {
     isAdmin: L.isAdmin(me),
     scope,
     depts: depts.map(d => ({ id: d.id, name: d.name, color: d.color })),
-    users: members.map(m => ({ id: m.id, name: m.name, demo: Boolean(m.demo), role: m.role === 'worker' ? 'worker' : 'manager', level: m.role, owner: m.role === 'owner', admin: L.ADMIN.includes(m.role), dept: m.dept || 'Без отдела', deptId: m.dept_id, deptColor: m.dept_color || '#9AA3C7', title: m.title || '', boss: m.boss_id, tg: Boolean(m.tg_id) && (m.settings || {}).tg !== false, username: m.username })),
+    users: members.map(m => ({ id: m.id, name: m.name, demo: Boolean(m.demo), role: m.role === 'worker' ? 'worker' : 'manager', level: m.role, owner: m.role === 'owner', admin: L.ADMIN.includes(m.role), dept: m.dept || 'Без отдела', deptId: m.dept_id, deptColor: m.dept_color || '#9AA3C7', plansOn: m.plans_on, walletOn: m.wallet_on, title: m.title || '', boss: m.boss_id, tg: Boolean(m.tg_id) && (m.settings || {}).tg !== false, username: m.username })),
     tasks: tasks.map(t => ({ id: t.id, title: t.title, desc: t.descr, assignee: t.assignee_id, author: t.author_id, priority: t.priority, status: t.status, created: t.created_on, due: t.due, dueTime: t.due_time, ext: t.extended, remind: t.remind_at, doneAt: t.done_on,
       comments: comments.filter(c => c.task_id === t.id).map(c => ({ u: c.member_id, t: c.text, at: c.at })) })),
     plans: P,
@@ -207,6 +208,13 @@ app.get('/api/state', auth(), wrap(async (req, res) => {
     notifs: notifs.map(n => ({ id: n.id, to: me.id, text: n.text, at: n.at, read: n.read })),
     settings: { [me.id]: me.settings },
     bot: tg.botUsername(),
+    billing: {
+      company: L.isAdmin(me) ? await B.companyInfo(me.company_id) : null,
+      ai: await B.aiAccess(me.user_id),
+      features: { plans: await B.hasFeature(me.user_id, 'plans'), wallet: await B.hasFeature(me.user_id, 'wallet') },
+      platformAdmin: await B.isPlatformAdmin(req.s.user),
+      pay: process.env.PAY_CONTACT || '',
+    },
   });
 }));
 
@@ -261,6 +269,64 @@ app.post('/api/tasks/:id/comments', auth(), wrap(async (req, res) => {
   const r = await L.addComment(t, req.me, clean(req.body.text, 1000));
   if (r.error) return res.status(400).json(r);
   res.json({ ok: true });
+}));
+
+/* ---------- платные разделы: «Мои планы» и «Кошелёк» ---------- */
+const needFeature = (f, name) => (req, res, next) => (async () => {
+  if (!req.s || !req.s.user) return next();
+  if (await B.hasFeature(req.s.user.id, f)) return next();
+  res.status(402).json({ error: `«${name}» не подключён. Попросите руководителя подключить его в разделе «Команда».`, locked: f });
+})().catch(next);
+app.use(['/api/plans', '/api/habits'], (req, res, next) => loadSession(req).then(s => { req.s = req.s || s; next(); }).catch(next), needFeature('plans', 'Мои планы'));
+app.use('/api/wallet', (req, res, next) => loadSession(req).then(s => { req.s = req.s || s; next(); }).catch(next), needFeature('wallet', 'Кошелёк'));
+
+/* ---------- администрирование платформы: отметка оплат ---------- */
+const platformAdmin = () => (req, res, next) => B.isPlatformAdmin(req.s.user).then(ok => ok ? next() : res.status(403).json({ error: 'Только для администратора платформы' })).catch(next);
+app.get('/api/admin/overview', auth(false), platformAdmin(), wrap(async (req, res) => {
+  const cos = await db.all(`SELECT id FROM companies ORDER BY id DESC LIMIT 300`);
+  const companies = [];
+  for (const c of cos) {
+    const info = await B.companyInfo(c.id);
+    const owner = await db.one(`SELECT u.name, u.username FROM members m JOIN users u ON u.id=m.user_id WHERE m.company_id=$1 AND m.role='owner' LIMIT 1`, [c.id]);
+    companies.push({ ...info, owner: owner && owner.name, ownerUsername: owner && owner.username });
+  }
+  const us = await db.all(`SELECT u.id, u.name, u.username, u.ai_trial_start, u.ai_paid_until, COALESCE(a.voice_sec,0) voice_sec, COALESCE(a.msgs,0) msgs, COALESCE(a.extra_min,0) extra_min
+     FROM users u LEFT JOIN ai_usage a ON a.user_id=u.id AND a.month=$1 WHERE NOT u.demo AND u.tg_id > 0 AND (u.ai_trial_start IS NOT NULL OR u.ai_paid_until IS NOT NULL) ORDER BY u.id DESC LIMIT 300`, [today().slice(0, 7)]);
+  const users = [];
+  for (const u of us) { const a = await B.aiAccess(u.id); users.push({ id: u.id, name: u.name, username: u.username, trialEnds: a.trialEnds, paidUntil: u.ai_paid_until, src: a.src, usedMin: a.usedMin, limitMin: a.limitMin, usedMsgs: a.usedMsgs, limitMsgs: a.limitMsgs }); }
+  const pays = await db.all(`SELECT p.*, c.name AS company, u.name AS user FROM payments p LEFT JOIN companies c ON c.id=p.company_id LEFT JOIN users u ON u.id=p.user_id ORDER BY p.id DESC LIMIT 50`);
+  res.json({ companies, users, payments: pays.map(p => ({ id: p.id, kind: p.kind, company: p.company, user: p.user, months: p.months, amount: Number(p.amount), at: p.at })), price: { unit: B.UNIT_UZS, solo: B.uzs(B.PRICE.solo), pack: B.uzs(B.PRICE.pack) } });
+}));
+const extendDate = (cur, months) => { const base = cur && cur >= today() ? cur : today(); const d = new Date(base + 'T12:00:00Z'); d.setUTCMonth(d.getUTCMonth() + months); return d.toISOString().slice(0, 10); };
+app.post('/api/admin/company/:id/paid', auth(false), platformAdmin(), wrap(async (req, res) => {
+  const months = Math.max(1, Math.min(12, Number(req.body.months) || 1));
+  const co = await db.one(`SELECT * FROM companies WHERE id=$1`, [Number(req.params.id)]);
+  if (!co) return res.status(404).json({ error: 'Компания не найдена' });
+  const info = await B.companyInfo(co.id), until = extendDate(co.paid_until, months);
+  await db.q(`UPDATE companies SET paid_until=$1 WHERE id=$2`, [until, co.id]);
+  await db.q(`INSERT INTO payments (kind, company_id, months, amount, by_user) VALUES ('company',$1,$2,$3,$4)`, [co.id, months, info.sum * months, req.s.user.id]);
+  res.json({ ok: true, paidUntil: until });
+}));
+app.post('/api/admin/user/:id/ai', auth(false), platformAdmin(), wrap(async (req, res) => {
+  const u = await db.one(`SELECT * FROM users WHERE id=$1`, [Number(req.params.id)]);
+  if (!u) return res.status(404).json({ error: 'Пользователь не найден' });
+  if (req.body.pack) {
+    await db.q(`INSERT INTO ai_usage (user_id, month, extra_min) VALUES ($1,$2,$3) ON CONFLICT (user_id, month) DO UPDATE SET extra_min = ai_usage.extra_min + EXCLUDED.extra_min`, [u.id, today().slice(0, 7), B.PACK_MIN]);
+    await db.q(`INSERT INTO payments (kind, user_id, amount, note, by_user) VALUES ('pack',$1,$2,$3,$4)`, [u.id, B.uzs(B.PRICE.pack), `+${B.PACK_MIN} мин`, req.s.user.id]);
+    return res.json({ ok: true });
+  }
+  const months = Math.max(1, Math.min(12, Number(req.body.months) || 1)), until = extendDate(u.ai_paid_until, months);
+  await db.q(`UPDATE users SET ai_paid_until=$1 WHERE id=$2`, [until, u.id]);
+  await db.q(`INSERT INTO payments (kind, user_id, months, amount, by_user) VALUES ('ai',$1,$2,$3,$4)`, [u.id, months, B.uzs(B.PRICE.solo) * months, req.s.user.id]);
+  if (u.tg_id > 0) await tg.send(u.tg_id, `✅ ИИ-помощник оплачен до ${until}. Спасибо!
+
+Голосовые и свободный текст снова работают.`, { open: false });
+  res.json({ ok: true, paidUntil: until });
+}));
+app.get('/api/admin/find-user', auth(false), platformAdmin(), wrap(async (req, res) => {
+  const q = clean(req.query.q, 60).replace(/^@/, '');
+  const rows = q ? await db.all(`SELECT id, name, username, ai_trial_start, ai_paid_until FROM users WHERE NOT demo AND tg_id > 0 AND (name ILIKE $1 OR username ILIKE $1) ORDER BY id DESC LIMIT 20`, ['%' + q + '%']) : [];
+  res.json(rows);
 }));
 
 /* ---------- планы и привычки ---------- */
@@ -406,7 +472,8 @@ app.patch('/api/members/:id', auth(), wrap(async (req, res) => {
   }
   const bossId = role === 'founder' ? null : (b.bossId === undefined ? m.boss_id : (Number(b.bossId) && Number(b.bossId) !== m.id ? Number(b.bossId) : null));
   const active = b.active === false && m.role !== 'owner' ? false : m.active;
-  await db.q(`UPDATE members SET role=$1, dept_id=$2, title=$3, boss_id=$4, active=$5 WHERE id=$6`, [role, deptId, b.title !== undefined ? clean(b.title, 60) : m.title, bossId, active, m.id]);
+  await db.q(`UPDATE members SET role=$1, dept_id=$2, title=$3, boss_id=$4, active=$5, plans_on=$6, wallet_on=$7 WHERE id=$8`,
+    [role, deptId, b.title !== undefined ? clean(b.title, 60) : m.title, bossId, active, typeof b.plansOn === 'boolean' ? b.plansOn : m.plans_on, typeof b.walletOn === 'boolean' ? b.walletOn : m.wallet_on, m.id]);
   res.json({ ok: true });
 }));
 /* ---------- кошелёк (личный, видит только сам человек) ---------- */

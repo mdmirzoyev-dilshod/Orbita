@@ -152,6 +152,7 @@ async function tick() {
     const hm = await primaryMemberId(h.user_id); if (!hm) continue;
     await notify(hm, `💪 Привычка: ${h.name}${h.note ? '\n🎯 ' + h.note : ''}\n\nНе забудьте отметить в «Моих планах».`, { kind: 'remind', path: '/#plans' });
   }
+  await require('./billing').trialReminders(tg).catch(e => console.warn('[billing]', e.message));
   // напоминания, указанные в задаче
   const due = await db.all(`SELECT * FROM tasks WHERE remind_at IS NOT NULL AND NOT remind_sent AND status <> 'done' AND remind_at <= $1`, [now]);
   for (const t of due) {
