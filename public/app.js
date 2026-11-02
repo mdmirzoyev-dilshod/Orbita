@@ -44,7 +44,26 @@ async function api(method, url, body){
   const r = await fetch(url, {method, headers: body?{'content-type':'application/json'}:{}, body: body?JSON.stringify(body):undefined, credentials:'same-origin'});
   let j = {}; try { j = await r.json(); } catch(e){}
   if(!r.ok){ const err = new Error(j.error || 'Не получилось. Проверьте интернет и попробуйте ещё раз.'); err.status = r.status; throw err; }
+  if(method !== 'GET') LAST_MUT = Date.now();
   return j;
+}
+/* ---------- синхронизация в реальном времени (SSE) ---------- */
+let LAST_MUT = 0, ES = null, SYNC_T = null, SYNC_PENDING = false;
+const busy = () => !!document.querySelector('#modal .modal') || (document.activeElement && /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName) && document.activeElement.value);
+async function liveRefresh(){
+  if(busy()){ SYNC_PENDING = true; return; }
+  SYNC_PENDING = false;
+  try { await reload(); if(current()==='wallet' && WM) { WAL = null; await loadWallet(); return; } render(); } catch(e){}
+}
+function startLive(){
+  if(ES || !window.EventSource) return;
+  ES = new EventSource('/api/events');
+  ES.onmessage = () => {
+    if(Date.now() - LAST_MUT < 1500) return;          // своё же изменение — интерфейс уже обновлён
+    clearTimeout(SYNC_T); SYNC_T = setTimeout(liveRefresh, 400);
+  };
+  ES.onerror = () => {};                                // браузер переподключится сам
+  setInterval(()=>{ if(SYNC_PENDING && !busy()) liveRefresh(); }, 2000);
 }
 function toast(msg){ const el = document.createElement('div'); el.className='toast'; el.textContent = msg; document.body.appendChild(el); setTimeout(()=>el.remove(), 2600); }
 async function act(fn, okMsg){ try { await fn(); await reload(); render(); if(okMsg) toast(okMsg); } catch(e){ toast(e.message); } }
@@ -777,7 +796,7 @@ function openWalletEdit(id){
 
 /* ---------- окна ---------- */
 const modal = html => { $('modal').innerHTML = `<div class="ov" data-close="1">${html}</div>`; };
-function closeModal(){ $('modal').innerHTML=''; }
+function closeModal(){ $('modal').innerHTML=''; if(SYNC_PENDING) setTimeout(liveRefresh, 50); }
 function openNew(forUser){
   const mgr = isMgr(), pool = mgr ? scope() : [me()];
   const opts = pool.map(u=>`<option value="${u.id}" ${String(u.id)===String(forUser||(mgr?'':S.me))?'selected':''}>${esc(u.name)}${u.title?' — '+esc(u.title):''}</option>`).join('');
@@ -805,11 +824,13 @@ function openTask(id){
   modal(`<div class="modal" role="dialog" aria-label="Задача">
     <div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start"><h2 style="margin:0 0 6px">${esc(t.title)}</h2>${statusChip(t)}</div>
     ${t.desc?`<p style="margin:0 0 12px;color:var(--muted);white-space:pre-line">${esc(t.desc)}</p>`:''}
-    <dl class="dl"><dt>Исполнитель</dt><dd>${esc(a.name)}${a.title?' · '+esc(a.title):''}</dd><dt>Поставил</dt><dd>${esc(au.name)}</dd><dt>Срок</dt><dd${late(t)?' style="color:var(--bad);font-weight:700"':''}>${dueText(t)}${t.ext?` <span class="note">· продлевали ${t.ext} раз</span>`:''}</dd><dt>Приоритет</dt><dd class="p-${t.priority}">${PRIO[t.priority]}</dd><dt>Напоминание</dt><dd>${t.remind?fmtDT(t.remind):'нет'}</dd></dl>
+    <dl class="dl"><dt>Исполнитель</dt><dd>${esc(a.name)}${a.title?' · '+esc(a.title):''}</dd><dt>Поставил</dt><dd>${esc(au.name)}</dd><dt>Срок</dt><dd${late(t)?' style="color:var(--bad);font-weight:700"':''}>${dueText(t)}${t.ext?` <span class="note">· продлевали ${t.ext} раз</span>`:''}</dd><dt>Приоритет</dt><dd class="p-${t.priority}">${PRIO[t.priority]}</dd>${t.remind?`<dt>Напомнить в</dt><dd>${fmtDT(t.remind)}</dd>`:''}</dl>
     ${t.series?`<div class="serbox">🔁 Повторяется: <b>${esc(REPEAT_RU[t.series.repeat]||'')}</b>${t.series.active?'':' · остановлено'}${t.series.active&&(t.author===S.me||isOwner())?` <button type="button" class="linkbtn" data-stopser="${t.series.id}">Остановить повтор</button>`:''}</div>`:''}
     ${t.photo?`<div class="serbox">📸 Нужен фото-отчёт — исполнитель отправляет фото ответом на сообщение бота</div>`:''}
     ${t.checklist.length?`<div class="field"><label>Чек-лист · ${t.checklist.filter(c=>c.d).length} из ${t.checklist.length}</label></div><div class="cklist">${t.checklist.map((c,i)=>`<label class="ck ${c.d?'on':''}"><input type="checkbox" data-ck="${t.id}|${i}" ${c.d?'checked':''} ${canStatus?'':'disabled'}><span>${esc(c.t)}</span></label>`).join('')}</div>`:''}
     ${t.assignee===S.me&&t.author!==S.me&&t.status!=='done'?`<div style="margin:0 0 10px"><button type="button" class="btn sm" data-more="${t.id}">⏳ Нужно больше времени</button></div>`:''}
+    ${t.status!=='done'&&(t.assignee===S.me||t.author===S.me)?`<div class="serbox remrow"><span>${t.remindOff?'🔕 Напоминания выключены':t.snoozeUntil?`⏰ Напомню ${t.snoozeUntil.slice(0,10)===TODAY?'сегодня':fmt(t.snoozeUntil)} в ${t.snoozeUntil.slice(11,16)}`:'🔔 Напоминание перед сроком включено'}${t.seenAt?` · 👀 видел(а) ${t.seenAt.slice(0,10)===TODAY?'':fmt(t.seenAt)+' '}${t.seenAt.slice(11,16)}`:''}</span>
+      <span class="remacts">${[['15','+15 мин'],['60','+1 час'],['tm','Завтра 9:00']].map(([v,l])=>`<button type="button" class="btn sm" data-snz="${t.id}|${v}">${l}</button>`).join('')}<button type="button" class="btn sm" data-roff="${t.id}|${t.remindOff?0:1}">${t.remindOff?'🔔 Включить':'🔕 Выключить'}</button></span></div>`:''}
     ${canExtend(t)?`<div class="extbox ${late(t)?'late':''}"><div class="field" style="margin:0 0 8px"><label>${late(t)?'Срок истёк — добавить время':'Продлить срок'}</label></div>
       <div class="extrow">${[['2h','+2 часа'],['1d','+1 день'],['3d','+3 дня'],['7d','+неделя']].map(([c,l])=>`<button type="button" class="btn sm" data-ext="${t.id}|${c}">${l}</button>`).join('')}</div>
       <form class="extrow" id="ext-form" data-id="${t.id}" style="margin-top:8px"><input type="date" id="ext-due" value="${t.due>=TODAY?addDays(t.due,1):addDays(TODAY,1)}" min="${TODAY}" aria-label="Новая дата"><input type="time" id="ext-time" value="${t.dueTime||''}" aria-label="Время (необязательно)"><button class="btn sm primary" type="submit">Назначить срок</button></form></div>`:''}
@@ -941,14 +962,16 @@ async function boot(){
   if(join) return screenJoin(join);
   if(!ME.member) return screenOnboard();
   await reload();
-  shell(); render();
+  shell(); render(); startLive();
 }
 
 /* ---------- события ---------- */
 document.addEventListener('click', e => {
-  const el = e.target.closest('[data-theme-set],[data-stopser],[data-more],[data-pay],[data-pt],[data-addon],[data-admpay],[data-ext],[data-wk],[data-wcat],[data-wedit],[data-wdel],[data-bud],[data-act],[data-open],[data-tick],[data-plan],[data-pdel],[data-pedit],[data-hedit],[data-hdel],[data-hab],[data-status],[data-close],[data-delete],[data-sw],[data-cf],[data-view],[data-mode]');
+  const el = e.target.closest('[data-snz],[data-roff],[data-theme-set],[data-stopser],[data-more],[data-pay],[data-pt],[data-addon],[data-admpay],[data-ext],[data-wk],[data-wcat],[data-wedit],[data-wdel],[data-bud],[data-act],[data-open],[data-tick],[data-plan],[data-pdel],[data-pedit],[data-hedit],[data-hdel],[data-hab],[data-status],[data-close],[data-delete],[data-sw],[data-cf],[data-view],[data-mode]');
   if(!el) return;
   if(el.dataset.close && e.target !== el && !e.target.closest('button[data-close]')) return;
+  if(el.dataset.snz || el.dataset.roff){ const [id,v] = (el.dataset.snz||el.dataset.roff).split('|'); const body = el.dataset.snz ? {snooze:v} : {off: v==='1'};
+    return (async()=>{ try { await api('POST',`/api/tasks/${id}/remind`, body); await reload(); render(); openTask(Number(id)); toast(el.dataset.snz ? 'Напомню позже — в боте тоже' : (v==='1' ? 'Напоминания выключены' : 'Напоминания включены')); } catch(err){ toast(err.message); } })(); }
   if(el.dataset.themeSet){ document.documentElement.dataset.theme = el.dataset.themeSet; try{ localStorage.setItem('orb-theme', el.dataset.themeSet); }catch(err){} return render(); }
   if(el.dataset.pay) return openPay(el.dataset.pay);
   if(el.dataset.more){ const id=Number(el.dataset.more); return (async()=>{ try { await api('POST',`/api/tasks/${id}/more`); await reload(); render(); openTask(id); toast('Запрос отправлен — руководитель сможет продлить срок'); } catch(err){ toast(err.message); } })(); }

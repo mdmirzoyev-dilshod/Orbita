@@ -10,12 +10,24 @@ const L = require('./logic');
 require('./assistant');   // голосовые и свободный текст в боте (ИИ)
 const B = require('./billing');
 const PAY = require('./pay');
+const EV = require('./events');
 const { today, nowLocal, addDays, fmtDue } = require('./time');
 
 const app = express();
 app.set('trust proxy', 1);
 app.use(express.json({ limit: '200kb' }));
 app.use(express.urlencoded({ extended: false, limit: '50kb' }));   // Click присылает форму
+// любое успешное изменение через API → событие для сайта и Mini App (синхронизация в реальном времени)
+app.use('/api', (req, res, next) => {
+  if (req.method !== 'GET' && !/^\/(auth|events|logout)/.test(req.path)) {
+    res.on('finish', () => {
+      if (res.statusCode >= 400) return;
+      const companyId = req.me ? req.me.company_id : null, userId = req.s && req.s.user ? req.s.user.id : null;
+      if (companyId || userId) EV.publish({ companyId, userId });
+    });
+  }
+  next();
+});
 app.use(cookieParser());
 
 const COOKIE = 'orb_s';
@@ -207,7 +219,7 @@ app.get('/api/state', auth(), wrap(async (req, res) => {
     users: members.map(m => ({ id: m.id, name: m.name, demo: Boolean(m.demo), role: m.role === 'worker' ? 'worker' : 'manager', level: m.role, owner: m.role === 'owner', admin: L.ADMIN.includes(m.role), dept: m.dept || 'Без отдела', deptId: m.dept_id, deptColor: m.dept_color || '#9AA3C7', plansOn: m.plans_on, walletOn: m.wallet_on, title: m.title || '', boss: m.boss_id, tg: Boolean(m.tg_id) && (m.settings || {}).tg !== false, username: m.username })),
     tasks: tasks.map(t => ({ id: t.id, title: t.title, desc: t.descr, assignee: t.assignee_id, author: t.author_id, priority: t.priority, status: t.status, created: t.created_on, due: t.due, dueTime: t.due_time, ext: t.extended, remind: t.remind_at, doneAt: t.done_on,
       comments: comments.filter(c => c.task_id === t.id).map(c => ({ id: c.id, u: c.member_id, t: c.text, at: c.at, f: Boolean(c.file_id) })),
-      photo: t.requires_photo, checklist: Array.isArray(t.checklist) ? t.checklist : [], series: t.series_id ? { id: t.series_id, repeat: (seriesMap[t.series_id] || {}).repeat, active: (seriesMap[t.series_id] || {}).active } : null })),
+      seenAt: t.seen_at, snoozeUntil: t.snooze_until, remindOff: t.remind_off, photo: t.requires_photo, checklist: Array.isArray(t.checklist) ? t.checklist : [], series: t.series_id ? { id: t.series_id, repeat: (seriesMap[t.series_id] || {}).repeat, active: (seriesMap[t.series_id] || {}).active } : null })),
     plans: P,
     habits: habits.map(h => ({ id: h.id, name: h.name, note: h.note, wdays: h.wdays, start: h.start_on, until: h.until, time: h.time, remind: h.remind, days: Object.fromEntries(marks.filter(m => m.habit_id === h.id).map(m => [m.day, true])) })),
     notifs: notifs.map(n => ({ id: n.id, to: me.id, text: n.text, at: n.at, read: n.read })),
@@ -256,6 +268,14 @@ app.patch('/api/tasks/:id', auth(), wrap(async (req, res) => {
   }
   res.json({ ok: true });
 }));
+app.post('/api/tasks/:id/remind', auth(), wrap(async (req, res) => {
+  const t = await visibleTask(req.me, Number(req.params.id));
+  if (!t || !(t.assignee_id === req.me.id || t.author_id === req.me.id)) return res.status(403).json({ error: 'Напоминания настраивает исполнитель или автор' });
+  const b = req.body;
+  if (b.snooze) await L.setTaskRemind(t, { snooze: L.snoozeAt(String(b.snooze)), userId: req.s.user.id });
+  else await L.setTaskRemind(t, { off: Boolean(b.off) });
+  res.json({ ok: true });
+}));
 app.post('/api/tasks/:id/check', auth(), wrap(async (req, res) => {
   const r = await L.toggleCheck(Number(req.params.id), req.me, Number(req.body.idx));
   if (r.error) return res.status(400).json(r);
@@ -293,6 +313,8 @@ app.post('/api/tasks/:id/extend', auth(), wrap(async (req, res) => {
 app.delete('/api/tasks/:id', auth(), wrap(async (req, res) => {
   const t = await visibleTask(req.me, Number(req.params.id));
   if (!t || !(t.author_id === req.me.id || L.isAdmin(req.me))) return res.status(403).json({ error: 'Удалить может только автор задачи' });
+  await L.syncTaskMessages(t.id, 'deleted');
+  await L.cancelReminders('task', t.id);
   await db.q(`DELETE FROM tasks WHERE id=$1`, [t.id]);
   res.json({ ok: true });
 }));
@@ -397,6 +419,8 @@ app.patch('/api/plans/:id', auth(), wrap(async (req, res) => {
   if (!p) return res.status(404).json({ error: 'Пункт не найден' });
   if (typeof b.done === 'boolean' && Object.keys(b).length === 1) {
     await db.q(`UPDATE plan_items SET done=$1 WHERE id=$2`, [b.done, id]);
+    if (b.done) await L.cancelReminders('plan', id);
+    await L.syncPlanMessages(id, b.done);
     return res.json({ ok: true });
   }
   const f = planFields({ ...p, ...b, time: b.time !== undefined ? b.time : p.time });
@@ -613,6 +637,20 @@ app.patch('/api/profile', auth(false), wrap(async (req, res) => {
   res.json({ ok: true });
 }));
 
+// поток событий (Server-Sent Events): сайт и Mini App узнают об изменениях мгновенно
+app.get('/api/events', auth(false), async (req, res) => {
+  const uid = req.s.user.id;
+  let cos = new Set((await db.all(`SELECT company_id FROM members WHERE user_id=$1 AND active`, [uid])).map(r => r.company_id));
+  res.set({ 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache, no-transform', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
+  res.flushHeaders();
+  res.write(`retry: 3000\nevent: hello\ndata: {}\n\n`);
+  const unsub = EV.subscribe(async e => {
+    if (e.companyId && !cos.has(e.companyId)) cos = new Set((await db.all(`SELECT company_id FROM members WHERE user_id=$1 AND active`, [uid]).catch(() => [])).map(r => r.company_id));
+    if (e.userId === uid || (e.companyId && cos.has(e.companyId))) res.write(`data: ${JSON.stringify({ types: e.types, at: e.at })}\n\n`);
+  });
+  const ping = setInterval(() => res.write(`: ping\n\n`), 25000);
+  req.on('close', () => { clearInterval(ping); unsub(); });
+});
 app.get('/healthz', wrap(async (req, res) => { await db.q('SELECT 1'); res.json({ ok: true, bot: tg.botUsername() || null }); }));
 
 /* ---------- интерфейс ---------- */

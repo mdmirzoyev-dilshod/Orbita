@@ -1,6 +1,7 @@
 // Общая логика: права, уведомления, смена статуса, сводки
 const db = require('./db');
 const tg = require('./tg');
+const EV = require('./events');
 const { today, nowLocal, addDays, fmtDue, parts } = require('./time');
 
 const STATUS = { new: 'Новая', progress: 'В работе', review: 'На проверке', done: 'Выполнено' };
@@ -38,7 +39,7 @@ async function notify(memberId, text, opts = {}) {
   if (s.tg === false) return;
   if (opts.kind === 'assign' && s.onAssign === false) return;
   if (['done', 'status', 'comment', 'review'].includes(opts.kind) && s.onDone === false) return;
-  await tg.send(m.tg_id, text, { doneTaskId: opts.doneTaskId, taskId: opts.taskId, path: opts.path, buttons: opts.buttons, photo: opts.photo, checklist: opts.checklist });
+  await tg.send(m.tg_id, text, { doneTaskId: opts.doneTaskId, taskId: opts.taskId, path: opts.path, buttons: opts.buttons, photo: opts.photo, checklist: opts.checklist, remindTask: opts.remindTask, remindPlan: opts.remindPlan });
 }
 
 // Основное участие человека (самое раннее активное) — туда идут личные напоминания и итоги дня
@@ -57,7 +58,9 @@ async function changeStatus(taskId, actorId, status) {
   const t = await db.one(`SELECT * FROM tasks WHERE id=$1`, [taskId]);
   if (!t || t.status === status) return t;
   const doneOn = status === 'done' ? today() : null;
-  await db.q(`UPDATE tasks SET status=$1, done_on=$2 WHERE id=$3`, [status, doneOn, taskId]);
+  await db.q(`UPDATE tasks SET status=$1, done_on=$2, updated_at=now() WHERE id=$3`, [status, doneOn, taskId]);
+  EV.publish({ companyId: t.company_id });
+  if (status === 'done') { await cancelReminders('task', taskId); await syncTaskMessages(taskId, 'done'); }
   const who = await memberName(actorId);
   if (t.author_id && t.author_id !== actorId) {
     const text = status === 'done' ? `✅ ${who} выполнил(а) задачу\n«${t.title}»`
@@ -139,7 +142,7 @@ async function tick() {
   for (const p of pl) {
     await db.q(`UPDATE plan_items SET reminded=true WHERE id=$1`, [p.id]);
     const pm = await primaryMemberId(p.user_id); if (!pm) continue;
-    await notify(pm, `🗓 ${p.time} — ${p.important ? '⭐ ' : ''}${p.text}${p.note ? '\n\n📝 ' + p.note : ''}`, { kind: 'remind', path: '/#plans' });
+    await notify(pm, `🗓 ${p.time} — ${p.important ? '⭐ ' : ''}${p.text}${p.note ? '\n\n📝 ' + p.note : ''}`, { kind: 'remind', path: '/#plans', remindPlan: p.id });
   }
   // напоминания по привычкам (в дни расписания, если ещё не отмечена)
   const wdNow = String(new Date(`${date}T12:00:00Z`).getUTCDay());
@@ -154,11 +157,12 @@ async function tick() {
   }
   await require('./billing').trialReminders(tg).catch(e => console.warn('[billing]', e.message));
   await seriesTick(time);
+  await remindersTick(now).catch(e => console.warn('[reminders]', e.message));
   // напоминания, указанные в задаче
   const due = await db.all(`SELECT * FROM tasks WHERE remind_at IS NOT NULL AND NOT remind_sent AND status <> 'done' AND remind_at <= $1`, [now]);
   for (const t of due) {
     await db.q(`UPDATE tasks SET remind_sent=true WHERE id=$1`, [t.id]);
-    await notify(t.assignee_id, `⏰ Напоминание\n«${t.title}»\nСрок: ${fmtDue(t.due)} · Приоритет: ${PRIO[t.priority]}`, { kind: 'remind', doneTaskId: t.id, path: '/#tasks' });
+    await notify(t.assignee_id, `⏰ Напоминание\n«${t.title}»\nСрок: ${fmtDue(t.due)} · Приоритет: ${PRIO[t.priority]}`, { kind: 'remind', remindTask: t.id, path: '/#tasks' });
   }
   // срок истёк: исполнителю — напоминание, поставившему задачу — кнопки «продлить»
   const late = await db.all(`SELECT * FROM tasks WHERE status <> 'done' AND NOT overdue_sent AND due <= $1`, [date]);
@@ -173,14 +177,14 @@ async function tick() {
     }
   }
   // напоминание до срока (срок задачи — указанное время, по умолчанию 18:00)
-  const open = await db.all(`SELECT t.*, m.settings FROM tasks t JOIN members m ON m.id=t.assignee_id WHERE t.status <> 'done' AND NOT t.before_sent AND t.due >= $1 AND t.due <= $2`, [addDays(date, -1), addDays(date, 2)]);
+  const open = await db.all(`SELECT t.*, m.settings FROM tasks t JOIN members m ON m.id=t.assignee_id WHERE t.status <> 'done' AND NOT t.before_sent AND NOT t.remind_off AND t.due >= $1 AND t.due <= $2`, [addDays(date, -1), addDays(date, 2)]);
   for (const t of open) {
     const before = Number((t.settings || {}).before || 2);
     const dueAt = new Date(`${t.due}T${t.due_time || '18:00'}:00Z`).getTime() - before * 3600e3;
     const nowMs = new Date(`${now}:00Z`).getTime();
     if (nowMs >= dueAt) {
       await db.q(`UPDATE tasks SET before_sent=true WHERE id=$1`, [t.id]);
-      await notify(t.assignee_id, `⏳ Скоро срок: ${fmtDue(t.due)}\n«${t.title}»`, { kind: 'remind', doneTaskId: t.id, path: '/#tasks' });
+      await notify(t.assignee_id, `⏰ Скоро срок: ${fmtDue(t.due)}${t.due_time ? ' до ' + t.due_time : ''}\n«${t.title}»`, { kind: 'remind', remindTask: t.id, path: '/#tasks' });
     }
   }
 }
@@ -216,6 +220,7 @@ async function createTask(me, b) {
   }
   const t = await db.one(`INSERT INTO tasks (company_id, title, descr, assignee_id, author_id, priority, created_on, due, due_time, remind_at, requires_photo, checklist, series_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *`,
     [me.company_id, title, descr, assignee, me.id, priority, today(), due, dueTime, remind, requiresPhoto, JSON.stringify(checklist), b.seriesId || null]);
+  EV.publish({ companyId: me.company_id });
   if (assignee !== me.id) {
     const who = await memberName(me.id);
     await notify(assignee, `${b.seriesId ? '🔁 Задача на сегодня' : '📌 Новая задача'}\nот: ${who}\n\n«${title}»\nСрок: ${fmtDue(due)}${dueTime ? ' до ' + dueTime : ''} · Приоритет: ${PRIO[priority]}${descr ? '\n\n' + descr : ''}${checklist.length ? '\n\n📋 Чек-лист — отмечайте кнопками ниже' : ''}${requiresPhoto ? '\n📸 Нужен фото-отчёт: после выполнения ответьте на это сообщение фотографией' : ''}${remind ? '\n⏰ Напомню ' + remind.replace('T', ' в ') : ''}${REPLY_HINT}`, { kind: 'assign', doneTaskId: t.id, path: '/#tasks', checklist });
@@ -227,6 +232,7 @@ async function addComment(t, me, text, { fileId = null, silent = false } = {}) {
   if (!text && !fileId) return { error: 'Пустой комментарий' };
   if (!text) text = '📷 Фото-отчёт';
   await db.q(`INSERT INTO comments (task_id, member_id, text, at, file_id) VALUES ($1,$2,$3,$4,$5)`, [t.id, me.id, text, nowLocal(), fileId]);
+  EV.publish({ companyId: t.company_id });
   if (silent) return { ok: true };
   const who = await memberName(me.id);
   for (const to of new Set([t.assignee_id, t.author_id])) if (to && to !== me.id) await notify(to, `${fileId ? '📷' : '💬'} ${who} к задаче «${t.title}»:\n${text}${REPLY_HINT}`, { kind: 'comment', taskId: t.id, path: '/#tasks', photo: fileId });
@@ -243,7 +249,8 @@ async function toggleCheck(taskId, member, idx) {
   const list = Array.isArray(t.checklist) ? t.checklist : [];
   if (!list[idx]) return { error: 'Пункт не найден' };
   list[idx].d = !list[idx].d;
-  await db.q(`UPDATE tasks SET checklist=$1 WHERE id=$2`, [JSON.stringify(list), t.id]);
+  await db.q(`UPDATE tasks SET checklist=$1, updated_at=now() WHERE id=$2`, [JSON.stringify(list), t.id]);
+  EV.publish({ companyId: t.company_id });
   if (list.every(c => c.d) && t.author_id && t.author_id !== member.id) await notify(t.author_id, `📋 ${await memberName(member.id)} отметил(а) все пункты чек-листа\n«${t.title}»`, { kind: 'status', taskId: t.id, path: '/#tasks' });
   return { ok: true, task: { ...t, checklist: list } };
 }
@@ -262,7 +269,8 @@ async function photoReport(t, member, fileId, caption) {
   await addComment(t, member, caption || '📷 Фото-отчёт', { fileId, silent: true });
   const who = await memberName(member.id);
   const closes = t.requires_photo && t.status !== 'done' && t.assignee_id === member.id;
-  if (closes) await db.q(`UPDATE tasks SET status='done', done_on=$1 WHERE id=$2`, [today(), t.id]);
+  if (closes) { await db.q(`UPDATE tasks SET status='done', done_on=$1, updated_at=now() WHERE id=$2`, [today(), t.id]); await cancelReminders('task', t.id); await syncTaskMessages(t.id, 'done'); }
+  EV.publish({ companyId: t.company_id });
   for (const to of new Set([t.assignee_id, t.author_id])) if (to && to !== member.id)
     await notify(to, `${closes ? '✅' : '📷'} ${who} ${closes ? 'выполнил(а) задачу с фото-отчётом' : 'прислал(а) фото к задаче'}\n«${t.title}»${caption ? '\n' + caption : ''}`, { kind: closes ? 'done' : 'comment', taskId: t.id, path: '/#tasks', photo: fileId });
   return { closed: closes };
@@ -276,6 +284,119 @@ async function askMore(t, member) {
   for (const id of to) await notify(id, `⏳ ${who} просит больше времени\n«${t.title}»\nСрок сейчас: ${dueLabel(t.due, t.due_time)}\n\nСколько добавить?`, { kind: 'overdue', taskId: t.id, path: '/#tasks', buttons: EXT_BUTTONS(t.id) });
   await db.q(`INSERT INTO comments (task_id, member_id, text, at) VALUES ($1,$2,$3,$4)`, [t.id, member.id, '⏳ Попросил(а) больше времени', nowLocal()]);
   return { ok: true };
+}
+
+/* ---------- напоминания 2.0: отложить, видел, не напоминать; синхронизация сообщений бота ---------- */
+async function cancelReminders(entityType, id) {
+  await db.q(`UPDATE reminders SET status='cancelled' WHERE entity_type=$1 AND entity_id=$2 AND status='pending'`, [entityType, id]);
+}
+// поменять кнопки во всех сообщениях бота о задаче (выполнена на сайте → «✅ Выполнено» в Telegram)
+async function syncTaskMessages(taskId, state) {
+  const label = state === 'done' ? '✅ Выполнено' : '🗑 Задача удалена';
+  const msgs = await db.all(`SELECT chat_id, message_id FROM tg_msgs WHERE task_id=$1 AND kind='task' AND created_at > now() - interval '45 days'`, [taskId]);
+  for (const m of msgs) await tg.call('editMessageReplyMarkup', { chat_id: m.chat_id, message_id: m.message_id, reply_markup: { inline_keyboard: [[{ text: label, callback_data: 'noop' }]] } });
+}
+async function syncPlanMessages(planId, done) {
+  const msgs = await db.all(`SELECT chat_id, message_id FROM tg_msgs WHERE plan_id=$1 AND kind='plan'`, [planId]);
+  for (const m of msgs) await tg.call('editMessageReplyMarkup', { chat_id: m.chat_id, message_id: m.message_id, reply_markup: { inline_keyboard: done ? [[{ text: '✅ Выполнено', callback_data: 'noop' }]] : tg.remindKb('p', planId) } });
+}
+const hhmm = s => String(s || '').slice(11, 16);
+function snoozeAt(arg) {
+  const now = nowLocal();
+  if (arg === 'tm') return `${addDays(today(), 1)}T09:00`;
+  const min = Math.max(5, Math.min(24 * 60, Number(arg) || 15));
+  const d = new Date(now + ':00Z'); d.setUTCMinutes(d.getUTCMinutes() + min);
+  return d.toISOString().slice(0, 16);
+}
+// задача, по которой пользователь — исполнитель (или автор)
+async function taskForUser(id, userId) {
+  return db.one(`SELECT t.*, m.id AS mid FROM tasks t JOIN members m ON m.company_id=t.company_id AND m.user_id=$2 AND m.active
+                 WHERE t.id=$1 AND (t.assignee_id=m.id OR t.author_id=m.id)`, [id, userId]);
+}
+async function setTaskRemind(t, { off, snooze, userId }) {
+  if (off !== undefined) {
+    await db.q(`UPDATE tasks SET remind_off=$1, snooze_until=NULL, updated_at=now() WHERE id=$2`, [Boolean(off), t.id]);
+    if (off) await cancelReminders('task', t.id);
+  }
+  if (snooze) {
+    await cancelReminders('task', t.id);
+    await db.q(`INSERT INTO reminders (kind, entity_type, entity_id, user_id, fire_at) VALUES ('snooze','task',$1,$2,$3)`, [t.id, userId, snooze]);
+    await db.q(`UPDATE tasks SET snooze_until=$1, remind_off=false, updated_at=now() WHERE id=$2`, [snooze, t.id]);
+  }
+  EV.publish({ companyId: t.company_id });
+}
+tg.handlers.remind = async ({ act, type, id, arg, userId }) => {
+  if (type === 'p') {
+    const p = await db.one(`SELECT * FROM plan_items WHERE id=$1 AND user_id=$2`, [id, userId]);
+    if (!p) return { error: 'Пункт плана не найден' };
+    if (act === 'pdone') { await db.q(`UPDATE plan_items SET done=true WHERE id=$1`, [id]); await cancelReminders('plan', id); EV.publish({ userId }); await syncPlanMessages(id, true); return { toast: 'Отмечено ✅', keyboard: [[{ text: '✅ Выполнено', callback_data: 'noop' }]] }; }
+    if (act === 'snz') return { toast: 'Когда напомнить?', keyboard: tg.snoozeKb('p', id) };
+    if (act === 'back') return { toast: ' ', keyboard: tg.remindKb('p', id) };
+    if (act === 'sz') {
+      const at = snoozeAt(arg);
+      await cancelReminders('plan', id);
+      await db.q(`INSERT INTO reminders (kind, entity_type, entity_id, user_id, fire_at) VALUES ('snooze','plan',$1,$2,$3)`, [id, userId, at]);
+      await db.q(`UPDATE plan_items SET snooze_until=$1 WHERE id=$2`, [at, id]); EV.publish({ userId });
+      const lbl = at.slice(0, 10) === today() ? hhmm(at) : 'завтра в ' + hhmm(at);
+      return { toast: `Напомню ${lbl}`, keyboard: [[{ text: '✅ Сделал', callback_data: `pdone:${id}` }], [{ text: `⏰ Напомню ${lbl}`, callback_data: `snz:p:${id}` }]] };
+    }
+    if (act === 'off') { await db.q(`UPDATE plan_items SET remind=false, snooze_until=NULL WHERE id=$1`, [id]); await cancelReminders('plan', id); EV.publish({ userId }); return { toast: 'Напоминания выключены', keyboard: [[{ text: '✅ Сделал', callback_data: `pdone:${id}` }], [{ text: '🔕 Без напоминаний', callback_data: 'noop' }]] }; }
+    return { error: 'Недоступно' };
+  }
+  const t = await taskForUser(id, userId);
+  if (!t) return { error: 'Задача не найдена' };
+  if (t.status === 'done') return { toast: 'Задача уже выполнена', keyboard: [[{ text: '✅ Выполнено', callback_data: 'noop' }]] };
+  if (act === 'seen') {
+    await db.q(`UPDATE tasks SET seen_at=$1, updated_at=now() WHERE id=$2`, [nowLocal(), t.id]);
+    EV.publish({ companyId: t.company_id });
+    return { toast: 'Отмечено: видели 👀', keyboard: [[{ text: '✅ Сделал', callback_data: `done:${t.id}` }, { text: '👀 Видел ✓', callback_data: 'noop' }], [{ text: '⏰ Напомнить позже', callback_data: `snz:t:${t.id}` }, { text: '⏳ Нужно больше времени', callback_data: `more:${t.id}` }]] };
+  }
+  if (act === 'snz') return { toast: 'Когда напомнить?', keyboard: tg.snoozeKb('t', t.id) };
+  if (act === 'back') return { toast: ' ', keyboard: tg.remindKb('t', t.id) };
+  if (act === 'sz') {
+    const at = snoozeAt(arg);
+    await setTaskRemind(t, { snooze: at, userId });
+    const lbl = at.slice(0, 10) === today() ? hhmm(at) : 'завтра в ' + hhmm(at);
+    return { toast: `Напомню ${lbl}`, keyboard: [[{ text: '✅ Сделал', callback_data: `done:${t.id}` }], [{ text: `⏰ Напомню ${lbl}`, callback_data: `snz:t:${t.id}` }]] };
+  }
+  if (act === 'off') {
+    await setTaskRemind(t, { off: true });
+    return { toast: 'Напоминания по задаче выключены', keyboard: [[{ text: '✅ Сделал', callback_data: `done:${t.id}` }], [{ text: '🔕 Без напоминаний', callback_data: 'noop' }]] };
+  }
+  return { error: 'Недоступно' };
+};
+// после любого действия в боте — обновить сайт и Mini App этого человека и его компаний
+tg.handlers.after = async tgId => {
+  const u = await db.one(`SELECT id FROM users WHERE tg_id=$1`, [tgId]);
+  if (!u) return;
+  EV.publish({ userId: u.id });
+  for (const m of await db.all(`SELECT DISTINCT company_id FROM members WHERE user_id=$1 AND active`, [u.id])) EV.publish({ companyId: m.company_id });
+};
+// отложенные напоминания (таблица reminders)
+async function remindersTick(now) {
+  const due = await db.tx(async c => {
+    const rows = (await c.query(`SELECT * FROM reminders WHERE status='pending' AND fire_at <= $1 ORDER BY fire_at LIMIT 100 FOR UPDATE SKIP LOCKED`, [now])).rows;
+    if (rows.length) await c.query(`UPDATE reminders SET status='sent', sent_at=now() WHERE id = ANY($1)`, [rows.map(r => r.id)]);
+    return rows;
+  });
+  for (const r of due) {
+    const u = await db.one(`SELECT tg_id FROM users WHERE id=$1`, [r.user_id]);
+    if (r.entity_type === 'task') {
+      const t = await db.one(`SELECT * FROM tasks WHERE id=$1`, [r.entity_id]);
+      await db.q(`UPDATE tasks SET snooze_until=NULL WHERE id=$1`, [r.entity_id]).catch(() => {});
+      if (!t || t.status === 'done' || t.remind_off) continue;
+      const m = await db.one(`SELECT id FROM members WHERE company_id=$1 AND user_id=$2 AND active`, [t.company_id, r.user_id]);
+      if (m) await db.q(`INSERT INTO notifs (member_id, text, at) VALUES ($1,$2,$3)`, [m.id, `⏰ Напоминание: «${t.title}»`, now]);
+      if (u && u.tg_id > 0) await tg.send(u.tg_id, `⏰ Напоминаю: «${t.title}»\nСрок: ${fmtDue(t.due)}${t.due_time ? ' до ' + t.due_time : ''}`, { remindTask: t.id, path: '/#tasks' });
+      EV.publish({ companyId: t.company_id });
+    } else if (r.entity_type === 'plan') {
+      const p = await db.one(`SELECT * FROM plan_items WHERE id=$1`, [r.entity_id]);
+      await db.q(`UPDATE plan_items SET snooze_until=NULL WHERE id=$1`, [r.entity_id]).catch(() => {});
+      if (!p || p.done) continue;
+      if (u && u.tg_id > 0) await tg.send(u.tg_id, `⏰ Напоминаю: ${p.time ? p.time + ' — ' : ''}${p.text}`, { remindPlan: p.id, path: '/#plans' });
+      EV.publish({ userId: r.user_id });
+    }
+  }
 }
 
 /* ---------- повторяющиеся задачи ---------- */
@@ -377,7 +498,9 @@ async function extendTask(taskId, actor, opt) {
     nd = addDays(baseDay, opt.days || 1); nt = t.due_time;
   }
   if (`${nd}T${nt || '23:59'}` <= now) return { error: 'Новый срок уже прошёл — выберите позже' };
-  await db.q(`UPDATE tasks SET due=$1, due_time=$2, overdue_sent=false, before_sent=$3, extended=extended+1 WHERE id=$4`, [nd, nt, Boolean(opt.hours), t.id]);
+  await db.q(`UPDATE tasks SET due=$1, due_time=$2, overdue_sent=false, before_sent=$3, extended=extended+1, snooze_until=NULL, more_asked=false, updated_at=now() WHERE id=$4`, [nd, nt, Boolean(opt.hours), t.id]);
+  await cancelReminders('task', t.id);
+  EV.publish({ companyId: t.company_id });
   const label = dueLabel(nd, nt), was = dueLabel(t.due, t.due_time);
   await db.q(`INSERT INTO comments (task_id, member_id, text, at) VALUES ($1,$2,$3,$4)`, [t.id, actor.id, `⏱ Срок продлён до ${label} (был ${was})`, now]);
   if (t.assignee_id !== actor.id) {
@@ -395,4 +518,4 @@ tg.handlers.extend = async (taskId, userId, code) => {
 
 function addMinutes(hhmm, n) { const [h, m] = hhmm.split(':').map(Number); const x = h * 60 + m + n; return `${String(Math.min(23, Math.floor(x / 60))).padStart(2, '0')}:${String(x >= 1440 ? 59 : x % 60).padStart(2, '0')}`; }
 
-module.exports = { REPEAT_RU, seriesMatches, runSeries, seriesTick, toggleCheck, markDone, photoReport, askMore, parseChecklist, canSeeTask, createTask, addComment, primaryMemberId, EXT, extendTask, canExtend, ADMIN, isAdmin, STATUS, PRIO, companyMembers, scopeOf, notify, memberName, changeStatus, morningDigest, eveningDigest, tick };
+module.exports = { cancelReminders, syncTaskMessages, syncPlanMessages, setTaskRemind, snoozeAt, remindersTick, REPEAT_RU, seriesMatches, runSeries, seriesTick, toggleCheck, markDone, photoReport, askMore, parseChecklist, canSeeTask, createTask, addComment, primaryMemberId, EXT, extendTask, canExtend, ADMIN, isAdmin, STATUS, PRIO, companyMembers, scopeOf, notify, memberName, changeStatus, morningDigest, eveningDigest, tick };

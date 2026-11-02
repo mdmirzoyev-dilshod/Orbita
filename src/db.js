@@ -235,6 +235,18 @@ CREATE TABLE IF NOT EXISTS task_series (
   active         BOOLEAN NOT NULL DEFAULT true,
   created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+CREATE TABLE IF NOT EXISTS reminders (
+  id           SERIAL PRIMARY KEY,
+  kind         TEXT NOT NULL,
+  entity_type  TEXT NOT NULL,
+  entity_id    INT NOT NULL,
+  user_id      INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  fire_at      TIMESTAMP NOT NULL,
+  status       TEXT NOT NULL DEFAULT 'pending',
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  sent_at      TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS reminders_due ON reminders(status, fire_at);
 CREATE TABLE IF NOT EXISTS wallet_budgets (
   user_id     INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   category    TEXT NOT NULL,
@@ -272,6 +284,9 @@ async function migrate() {
   for (const col of ["plans_on BOOLEAN NOT NULL DEFAULT false", "wallet_on BOOLEAN NOT NULL DEFAULT false"]) await q(`ALTER TABLE members ADD COLUMN IF NOT EXISTS ${col}`);
   await q(`ALTER TABLE companies ADD COLUMN IF NOT EXISTS paid_until DATE`);
   await q(`ALTER TABLE comments ADD COLUMN IF NOT EXISTS file_id TEXT`);
+  for (const col of ["seen_at TIMESTAMP", "snooze_until TIMESTAMP", "remind_off BOOLEAN NOT NULL DEFAULT false", "updated_at TIMESTAMPTZ NOT NULL DEFAULT now()"]) await q(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS ${col}`);
+  await q(`ALTER TABLE plan_items ADD COLUMN IF NOT EXISTS snooze_until TIMESTAMP`);
+  for (const col of ["kind TEXT", "plan_id INT"]) await q(`ALTER TABLE tg_msgs ADD COLUMN IF NOT EXISTS ${col}`);
   await q(`ALTER TABLE users ADD COLUMN IF NOT EXISTS demo BOOLEAN NOT NULL DEFAULT false`);
   await q(`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS back_token TEXT`);
   await q(`ALTER TABLE members DROP CONSTRAINT IF EXISTS members_role_check`);

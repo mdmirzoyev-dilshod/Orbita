@@ -5,7 +5,7 @@ const { today, fmtDue } = require('./time');
 const TOKEN = process.env.BOT_TOKEN || '';
 const API = `https://api.telegram.org/bot${TOKEN}`;
 let BOT_USERNAME = process.env.BOT_USERNAME || '';
-const handlers = { done: null, extend: null, transcribe: null, reply: null, assist: null, callback: null, aiGate: null, aiUsage: null, feature: null, photo: null };   // заполняются logic.js и assistant.js
+const handlers = { done: null, extend: null, transcribe: null, reply: null, assist: null, callback: null, aiGate: null, aiUsage: null, feature: null, photo: null, remind: null, after: null };   // заполняются logic.js и assistant.js
 
 const appUrl = () => process.env.APP_URL || (process.env.RAILWAY_PUBLIC_DOMAIN ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}` : '');
 const enabled = () => Boolean(TOKEN);
@@ -32,7 +32,9 @@ function openButton(path = '') {
 async function send(chatId, text, opts = {}) {
   if (!chatId || !TOKEN) return null;
   const rows = [];
-  if (opts.doneTaskId) {
+  if (opts.remindTask) rows.push(...remindKb('t', opts.remindTask));
+  else if (opts.remindPlan) rows.push(...remindKb('p', opts.remindPlan));
+  else if (opts.doneTaskId) {
     rows.push(opts.accepted ? [{ text: '✅ Сделал', callback_data: `done:${opts.doneTaskId}` }] : [{ text: '👍 Принял', callback_data: `acc:${opts.doneTaskId}` }, { text: '✅ Сделал', callback_data: `done:${opts.doneTaskId}` }]);
     rows.push([{ text: '⏳ Нужно больше времени', callback_data: `more:${opts.doneTaskId}` }]);
   }
@@ -45,9 +47,23 @@ async function send(chatId, text, opts = {}) {
     ? await call('sendPhoto', { chat_id: chatId, photo: opts.photo, caption: text.slice(0, 1000), reply_markup: markup })
     : await call('sendMessage', { chat_id: chatId, text, disable_web_page_preview: true, reply_markup: markup });
   // запоминаем, к какой задаче относится сообщение — чтобы ответ на него стал комментарием
-  const taskId = opts.taskId || opts.doneTaskId;
-  if (taskId && r && r.ok) await db.q(`INSERT INTO tg_msgs (chat_id, message_id, task_id) VALUES ($1,$2,$3) ON CONFLICT (chat_id, message_id) DO UPDATE SET task_id=EXCLUDED.task_id`, [chatId, r.result.message_id, taskId]).catch(() => {});
+  const taskId = opts.taskId || opts.doneTaskId || opts.remindTask;
+  const kind = (opts.doneTaskId || opts.remindTask) ? 'task' : opts.remindPlan ? 'plan' : 'link';
+  if ((taskId || opts.remindPlan) && r && r.ok) await db.q(`INSERT INTO tg_msgs (chat_id, message_id, task_id, plan_id, kind) VALUES ($1,$2,$3,$4,$5) ON CONFLICT (chat_id, message_id) DO UPDATE SET task_id=EXCLUDED.task_id, plan_id=EXCLUDED.plan_id, kind=EXCLUDED.kind`, [chatId, r.result.message_id, taskId || null, opts.remindPlan || null, kind]).catch(() => {});
   return r;
+}
+
+// кнопки напоминания: Сделал / Видел / Напомнить позже / Нужно больше времени
+function remindKb(type, id) {
+  return type === 't'
+    ? [[{ text: '✅ Сделал', callback_data: `done:${id}` }, { text: '👀 Видел, помню', callback_data: `seen:${id}` }],
+       [{ text: '⏰ Напомнить позже', callback_data: `snz:t:${id}` }, { text: '⏳ Нужно больше времени', callback_data: `more:${id}` }]]
+    : [[{ text: '✅ Сделал', callback_data: `pdone:${id}` }, { text: '⏰ Напомнить позже', callback_data: `snz:p:${id}` }]];
+}
+function snoozeKb(type, id) {
+  return [[{ text: '15 минут', callback_data: `sz:${type}:${id}:15` }, { text: '1 час', callback_data: `sz:${type}:${id}:60` }],
+    [{ text: '3 часа', callback_data: `sz:${type}:${id}:180` }, { text: 'Завтра в 9:00', callback_data: `sz:${type}:${id}:tm` }],
+    [{ text: '🙅 Не напоминать', callback_data: `off:${type}:${id}` }, { text: '« Назад', callback_data: `back:${type}:${id}` }]];
 }
 
 // кнопки чек-листа: ☐/☑ пункт (до 10 пунктов)
@@ -170,6 +186,19 @@ async function onMessage(m) {
 async function onCallback(cq) {
   const data = cq.data || '';
   if (handlers.callback && await handlers.callback(cq)) return;
+  // напоминания: видел / позже / не напоминать / план выполнен
+  const rm = data.match(/^(seen|snz|sz|off|back|pdone):(?:(t|p):)?(\d+)(?::(\w+))?$/);
+  if (rm && handlers.remind) {
+    const [, act, type, idS, arg] = rm;
+    const user = await db.one(`SELECT * FROM users WHERE tg_id=$1`, [cq.from.id]);
+    const answer = (text, alert) => call('answerCallbackQuery', { callback_query_id: cq.id, text, show_alert: Boolean(alert) });
+    if (!user) return answer('Сначала нажмите /start');
+    const r = await handlers.remind({ act, type: type || (act === 'pdone' ? 'p' : 't'), id: Number(idS), arg, userId: user.id });
+    if (r.error) return answer(r.error, true);
+    await answer(r.toast || 'Готово');
+    if (cq.message && r.keyboard) await call('editMessageReplyMarkup', { chat_id: cq.message.chat.id, message_id: cq.message.message_id, reply_markup: { inline_keyboard: r.keyboard } });
+    return;
+  }
   if (data.startsWith('wdel:')) {
     const user = await db.one(`SELECT * FROM users WHERE tg_id=$1`, [cq.from.id]);
     const r = user ? await db.q(`DELETE FROM wallet_tx WHERE id=$1 AND user_id=$2`, [Number(data.slice(5)), user.id]) : { rowCount: 0 };
@@ -229,6 +258,8 @@ async function poll() {
         try {
           if (u.message) await onMessage(u.message);
           else if (u.callback_query) await onCallback(u.callback_query);
+          const from = (u.message || u.callback_query || {}).from;
+          if (from && handlers.after) handlers.after(from.id).catch(() => {});
         } catch (e) { console.error('[tg] update', e); }
       }
     } catch (e) {
@@ -239,4 +270,4 @@ async function poll() {
 }
 function stop() { running = false; }
 
-module.exports = { checkRows, call, download, send, poll, stop, enabled, botUsername, appUrl, handlers, upsertUser, onMessage, onCallback };
+module.exports = { remindKb, snoozeKb, checkRows, call, download, send, poll, stop, enabled, botUsername, appUrl, handlers, upsertUser, onMessage, onCallback };
