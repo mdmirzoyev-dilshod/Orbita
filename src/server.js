@@ -191,6 +191,8 @@ app.get('/api/state', auth(), wrap(async (req, res) => {
   const t0 = today();
   const tasks = await db.all(`SELECT * FROM tasks WHERE company_id=$1 AND (assignee_id = ANY($2) OR author_id=$3) ORDER BY due, id`, [me.company_id, scope, me.id]);
   const comments = tasks.length ? await db.all(`SELECT * FROM comments WHERE task_id = ANY($1) ORDER BY id`, [tasks.map(t => t.id)]) : [];
+  const attIds = comments.filter(c => c.attach_id).map(c => c.attach_id);
+  const attMap = Object.fromEntries((attIds.length ? await db.all(`SELECT id, name, mime, size FROM task_files WHERE id = ANY($1)`, [attIds]) : []).map(f => [f.id, f]));
   const sids = [...new Set(tasks.map(t => t.series_id).filter(Boolean))];
   const seriesMap = Object.fromEntries((sids.length ? await db.all(`SELECT id, repeat, active FROM task_series WHERE id = ANY($1)`, [sids]) : []).map(x => [x.id, x]));
   const u2m = new Map(members.filter(m => scope.includes(m.id)).map(m => [m.user_id, m.id]));   // человек → его участие в этой компании
@@ -218,7 +220,7 @@ app.get('/api/state', auth(), wrap(async (req, res) => {
     depts: depts.map(d => ({ id: d.id, name: d.name, color: d.color })),
     users: members.map(m => ({ id: m.id, name: m.name, demo: Boolean(m.demo), role: m.role === 'worker' ? 'worker' : 'manager', level: m.role, owner: m.role === 'owner', admin: L.ADMIN.includes(m.role), dept: m.dept || 'Без отдела', deptId: m.dept_id, deptColor: m.dept_color || '#9AA3C7', plansOn: m.plans_on, walletOn: m.wallet_on, title: m.title || '', boss: m.boss_id, tg: Boolean(m.tg_id) && (m.settings || {}).tg !== false, username: m.username })),
     tasks: tasks.map(t => ({ id: t.id, title: t.title, desc: t.descr, assignee: t.assignee_id, author: t.author_id, priority: t.priority, status: t.status, created: t.created_on, due: t.due, dueTime: t.due_time, ext: t.extended, remind: t.remind_at, doneAt: t.done_on,
-      comments: comments.filter(c => c.task_id === t.id).map(c => ({ id: c.id, u: c.member_id, t: c.text, at: c.at, f: Boolean(c.file_id) })),
+      comments: comments.filter(c => c.task_id === t.id).map(c => ({ id: c.id, u: c.member_id, t: c.text, at: c.at, f: Boolean(c.file_id), a: c.attach_id && attMap[c.attach_id] ? { id: c.attach_id, name: attMap[c.attach_id].name, mime: attMap[c.attach_id].mime, size: attMap[c.attach_id].size } : null })),
       seenAt: t.seen_at, snoozeUntil: t.snooze_until, remindOff: t.remind_off, photo: t.requires_photo, checklist: Array.isArray(t.checklist) ? t.checklist : [], series: t.series_id ? { id: t.series_id, repeat: (seriesMap[t.series_id] || {}).repeat, active: (seriesMap[t.series_id] || {}).active } : null })),
     plans: P,
     habits: habits.map(h => ({ id: h.id, name: h.name, note: h.note, wdays: h.wdays, start: h.start_on, until: h.until, time: h.time, remind: h.remind, days: Object.fromEntries(marks.filter(m => m.habit_id === h.id).map(m => [m.day, true])) })),
@@ -253,7 +255,7 @@ app.patch('/api/tasks/:id', auth(), wrap(async (req, res) => {
     if (!L.STATUS[b.status]) return res.status(400).json({ error: 'Неизвестный статус' });
     if (b.status === 'done' && t.assignee_id === req.me.id && t.author_id !== req.me.id) {
       const r = await L.markDone(t, req.me);
-      if (r.needPhoto) return res.status(400).json({ error: 'Нужен фото-отчёт: ответьте фотографией на сообщение бота об этой задаче' });
+      if (r.needPhoto) return res.status(400).json({ error: 'Нужен отчёт: прикрепите фото или файл (кнопка «📎 Прикрепить файл» в задаче или ответом в боте)' });
     } else await L.changeStatus(t.id, req.me.id, b.status);
   }
   if (t.author_id === req.me.id || L.isAdmin(req.me)) {
@@ -267,6 +269,32 @@ app.patch('/api/tasks/:id', auth(), wrap(async (req, res) => {
     if (sets.length) { vals.push(t.id); await db.q(`UPDATE tasks SET ${sets.join(', ')} WHERE id=$${vals.length}`, vals); }
   }
   res.json({ ok: true });
+}));
+// файлы к задаче: загрузка с сайта / Mini App (до 20 МБ) и скачивание
+const FILE_MAX = 20 * 1048576;
+app.post('/api/tasks/:id/files', auth(), express.raw({ type: () => true, limit: FILE_MAX }), wrap(async (req, res) => {
+  const t = await visibleTask(req.me, Number(req.params.id));
+  if (!t) return res.status(404).json({ error: 'Задача не найдена' });
+  const data = req.body;
+  if (!Buffer.isBuffer(data) || !data.length) return res.status(400).json({ error: 'Файл пустой' });
+  let name = 'file'; try { name = decodeURIComponent(String(req.get('x-file-name') || 'file')); } catch {}
+  name = name.replace(/[\\/\r\n]+/g, '_').slice(0, 200) || 'file';
+  const mime = String(req.get('content-type') || 'application/octet-stream').slice(0, 120);
+  let caption = ''; try { caption = clean(decodeURIComponent(String(req.get('x-caption') || '')), 300); } catch {}
+  const r = await L.attachFile(t, req.me, { name, mime, size: data.length, data, caption });
+  res.json({ ok: true, id: r.id, closed: r.closed });
+}));
+app.get('/api/files/:id', auth(), wrap(async (req, res) => {
+  const f = await db.one(`SELECT * FROM task_files WHERE id=$1`, [Number(req.params.id)]);
+  const t = f && await visibleTask(req.me, f.task_id);
+  if (!t) return res.status(404).end();
+  let buf = f.data;
+  if (!buf && f.tg_file_id) { try { buf = await tg.download(f.tg_file_id); } catch { return res.status(502).json({ error: 'Файл слишком большой для загрузки из Telegram — откройте его в боте' }); } }
+  if (!buf) return res.status(404).end();
+  const inline = req.query.inline === '1' && /^image\//.test(f.mime);
+  res.set({ 'Content-Type': f.mime, 'Content-Length': buf.length, 'Cache-Control': 'private, max-age=86400', 'X-Content-Type-Options': 'nosniff',
+    'Content-Disposition': `${inline ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(f.name)}` });
+  res.send(buf);
 }));
 app.post('/api/tasks/:id/remind', auth(), wrap(async (req, res) => {
   const t = await visibleTask(req.me, Number(req.params.id));
@@ -664,6 +692,7 @@ app.get(['/', '/join/:code'], (req, res) => { res.set('Cache-Control', 'no-cache
 async function main() {
   if (!process.env.DATABASE_URL) { console.error('Нет DATABASE_URL — подключите PostgreSQL'); process.exit(1); }
   await db.migrate();
+  await require('./pay').migrate().catch(e => console.error('[pay] migrate', e.message));
   const port = Number(process.env.PORT) || 3000;
   app.listen(port, () => console.log(`Орбита запущена на порту ${port}`));
   if (tg.enabled()) tg.poll(); else console.warn('BOT_TOKEN не задан — бот выключен');

@@ -223,7 +223,7 @@ async function createTask(me, b) {
   EV.publish({ companyId: me.company_id });
   if (assignee !== me.id) {
     const who = await memberName(me.id);
-    await notify(assignee, `${b.seriesId ? '🔁 Задача на сегодня' : '📌 Новая задача'}\nот: ${who}\n\n«${title}»\nСрок: ${fmtDue(due)}${dueTime ? ' до ' + dueTime : ''} · Приоритет: ${PRIO[priority]}${descr ? '\n\n' + descr : ''}${checklist.length ? '\n\n📋 Чек-лист — отмечайте кнопками ниже' : ''}${requiresPhoto ? '\n📸 Нужен фото-отчёт: после выполнения ответьте на это сообщение фотографией' : ''}${remind ? '\n⏰ Напомню ' + remind.replace('T', ' в ') : ''}${REPLY_HINT}`, { kind: 'assign', doneTaskId: t.id, path: '/#tasks', checklist });
+    await notify(assignee, `${b.seriesId ? '🔁 Задача на сегодня' : '📌 Новая задача'}\nот: ${who}\n\n«${title}»\nСрок: ${fmtDue(due)}${dueTime ? ' до ' + dueTime : ''} · Приоритет: ${PRIO[priority]}${descr ? '\n\n' + descr : ''}${checklist.length ? '\n\n📋 Чек-лист — отмечайте кнопками ниже' : ''}${requiresPhoto ? '\n📎 Нужен отчёт: после выполнения ответьте на это сообщение фото или файлом' : '\n📎 К отчёту можно приложить файл — ответьте файлом на это сообщение'}${remind ? '\n⏰ Напомню ' + remind.replace('T', ' в ') : ''}${REPLY_HINT}`, { kind: 'assign', doneTaskId: t.id, path: '/#tasks', checklist });
   }
   return { task: t };
 }
@@ -258,7 +258,7 @@ async function toggleCheck(taskId, member, idx) {
 async function markDone(t, member) {
   if (t.status === 'done') return { ok: true, already: true };
   if (t.requires_photo) {
-    const ph = await db.one(`SELECT 1 FROM comments WHERE task_id=$1 AND file_id IS NOT NULL`, [t.id]);
+    const ph = await db.one(`SELECT 1 FROM comments WHERE task_id=$1 AND (file_id IS NOT NULL OR attach_id IS NOT NULL)`, [t.id]);
     if (!ph) return { needPhoto: true };
   }
   await changeStatus(t.id, member.id, 'done');
@@ -456,6 +456,41 @@ tg.handlers.photo = async ({ chat, user, taskId, fileId, caption }) => {
   return tg.send(chat, r.closed ? `✅ Фото-отчёт принят — задача «${t.title}» выполнена.` : `📷 Фото добавлено к задаче «${t.title}».`, { open: false, taskId: t.id });
 };
 
+/* ---------- файлы к задаче (отчёт о выполнении) ---------- */
+const fmtSize = n => n >= 1048576 ? (n / 1048576).toFixed(1).replace('.', ',') + ' МБ' : Math.max(1, Math.round(n / 1024)) + ' КБ';
+async function attachFile(t, member, f) {
+  const row = await db.one(`INSERT INTO task_files (task_id, member_id, name, mime, size, data, tg_file_id) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
+    [t.id, member.id, String(f.name || 'file').slice(0, 200), f.mime || 'application/octet-stream', f.size || (f.data ? f.data.length : 0), f.data || null, f.tgFileId || null]);
+  const text = `📎 ${f.name}${f.caption ? ' — ' + f.caption : ''}`;
+  await db.q(`INSERT INTO comments (task_id, member_id, text, at, attach_id) VALUES ($1,$2,$3,$4,$5)`, [t.id, member.id, text.slice(0, 2000), nowLocal(), row.id]);
+  const closes = t.requires_photo && t.status !== 'done' && t.assignee_id === member.id;
+  if (closes) { await db.q(`UPDATE tasks SET status='done', done_on=$1, updated_at=now() WHERE id=$2`, [today(), t.id]); await cancelReminders('task', t.id); await syncTaskMessages(t.id, 'done'); }
+  EV.publish({ companyId: t.company_id });
+  // уведомить второго участника и отправить сам файл в Telegram
+  const who = await memberName(member.id);
+  let fileId = f.tgFileId || null;
+  for (const to of new Set([t.assignee_id, t.author_id])) {
+    if (!to || to === member.id) continue;
+    const msg = `${closes ? '✅' : '📎'} ${who} ${closes ? 'выполнил(а) задачу и приложил(а) файл' : 'прикрепил(а) файл к задаче'}\n«${t.title}»\n${f.name} · ${fmtSize(f.size || 0)}${f.caption ? '\n' + f.caption : ''}`;
+    await db.q(`INSERT INTO notifs (member_id, text, at) VALUES ($1,$2,$3)`, [to, msg, nowLocal()]);
+    const m = await db.one(`SELECT m.settings, u.tg_id FROM members m JOIN users u ON u.id=m.user_id WHERE m.id=$1`, [to]);
+    if (!m || !m.tg_id || m.tg_id < 0 || (m.settings || {}).tg === false) continue;
+    const big = (f.size || 0) > 45 * 1048576;
+    const r = big ? await tg.send(m.tg_id, msg + '\n(файл большой — откройте в «Орбите»)', { taskId: t.id, path: '/#tasks' })
+      : await tg.send(m.tg_id, msg, { taskId: t.id, path: '/#tasks', document: fileId || { buffer: f.data, name: f.name, mime: f.mime } });
+    const doc = r && r.ok && r.result && r.result.document;
+    if (!fileId && doc) { fileId = doc.file_id; await db.q(`UPDATE task_files SET tg_file_id=$1 WHERE id=$2`, [fileId, row.id]); }
+  }
+  return { id: row.id, closed: closes };
+}
+tg.handlers.file = async ({ chat, user, taskId, fileId, name, mime, size, caption }) => {
+  const t = await db.one(`SELECT * FROM tasks WHERE id=$1`, [taskId]);
+  const m = t && await db.one(`SELECT * FROM members WHERE company_id=$1 AND user_id=$2 AND active`, [t.company_id, user.id]);
+  if (!t || !m || !(await canSeeTask(m, t))) return tg.send(chat, 'Эта задача уже недоступна.', { open: false });
+  const r = await attachFile(t, m, { name, mime, size, tgFileId: fileId, caption });
+  return tg.send(chat, r.closed ? `✅ Файл принят как отчёт — задача «${t.title}» выполнена.` : `📎 Файл «${name}» прикреплён к задаче «${t.title}».`, { open: false, taskId: t.id });
+};
+
 /* ---------- продление срока ---------- */
 const EXT = { '2h': { hours: 2, label: '+2 часа' }, '1d': { days: 1, label: '+1 день' }, '3d': { days: 3, label: '+3 дня' }, '7d': { days: 7, label: '+неделя' } };
 const EXT_BUTTONS = id => [[{ text: '+2 часа', callback_data: `ext:${id}:2h` }, { text: '+1 день', callback_data: `ext:${id}:1d` }], [{ text: '+3 дня', callback_data: `ext:${id}:3d` }, { text: '+неделя', callback_data: `ext:${id}:7d` }]];
@@ -518,4 +553,4 @@ tg.handlers.extend = async (taskId, userId, code) => {
 
 function addMinutes(hhmm, n) { const [h, m] = hhmm.split(':').map(Number); const x = h * 60 + m + n; return `${String(Math.min(23, Math.floor(x / 60))).padStart(2, '0')}:${String(x >= 1440 ? 59 : x % 60).padStart(2, '0')}`; }
 
-module.exports = { cancelReminders, syncTaskMessages, syncPlanMessages, setTaskRemind, snoozeAt, remindersTick, REPEAT_RU, seriesMatches, runSeries, seriesTick, toggleCheck, markDone, photoReport, askMore, parseChecklist, canSeeTask, createTask, addComment, primaryMemberId, EXT, extendTask, canExtend, ADMIN, isAdmin, STATUS, PRIO, companyMembers, scopeOf, notify, memberName, changeStatus, morningDigest, eveningDigest, tick };
+module.exports = { attachFile, cancelReminders, syncTaskMessages, syncPlanMessages, setTaskRemind, snoozeAt, remindersTick, REPEAT_RU, seriesMatches, runSeries, seriesTick, toggleCheck, markDone, photoReport, askMore, parseChecklist, canSeeTask, createTask, addComment, primaryMemberId, EXT, extendTask, canExtend, ADMIN, isAdmin, STATUS, PRIO, companyMembers, scopeOf, notify, memberName, changeStatus, morningDigest, eveningDigest, tick };

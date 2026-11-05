@@ -48,7 +48,8 @@ CREATE TABLE IF NOT EXISTS click_tx (
   created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 );`;
 let ready = null;
-const migrate = () => (ready ||= db.q(SCHEMA));
+// если попытка не удалась (например, основная схема ещё не создана) — не запоминаем ошибку, попробуем снова
+const migrate = () => (ready ||= db.q(SCHEMA).catch(e => { ready = null; throw e; }));
 
 const NAMES = { company: 'Тариф компании', ai: 'ИИ-помощник', pack: 'Пакет +60 минут голоса' };
 function links(inv) {
@@ -176,7 +177,6 @@ async function click(b, action) {
 
 /* ---------- маршруты ---------- */
 function routes(app, { auth, wrap }) {
-  migrate().catch(e => console.error('[pay] migrate', e.message));
 
   // создать счёт: компания (руководство) / ИИ-помощник / пакет минут
   app.post('/api/pay/invoice', auth(false), wrap(async (req, res) => {

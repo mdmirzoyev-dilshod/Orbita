@@ -80,6 +80,9 @@ const ROLES = [['worker','Сотрудник'],['manager','Руководите�
 const roleName = u => u.level==='owner' ? 'Владелец' : (ROLES.find(r=>r[0]===u.level)||['',''])[1];
 const roleSelect = (id, sel) => `<select id="${id}">${ROLES.map(([v,l])=>`<option value="${v}" ${v===sel?'selected':''}>${l}</option>`).join('')}</select>`;
 const bossOptions = (except, sel) => S.users.filter(x=>x.role==='manager' && x.id!==except).map(x=>`<option value="${x.id}" ${x.id===sel?'selected':''}>${esc(x.name)}${x.title?' — '+esc(x.title):''}</option>`).join('');
+const fileSize = n => n>=1048576 ? (n/1048576).toFixed(1).replace('.',',')+' МБ' : Math.max(1,Math.round(n/1024))+' КБ';
+const fileIcon = m => /pdf/.test(m)?'📕':/sheet|excel|csv/.test(m)?'📊':/word|document/.test(m)?'📄':/image/.test(m)?'🖼':/video/.test(m)?'🎬':/zip|rar|7z/.test(m)?'🗜':'📎';
+const attachView = a => `<a class="attfile" href="/api/files/${a.id}" target="_blank" rel="noopener">${/^image\//.test(a.mime)?`<img src="/api/files/${a.id}?inline=1" alt="" loading="lazy">`:`<span class="ai">${fileIcon(a.mime)}</span>`}<span class="an"><b>${esc(a.name)}</b><small>${fileSize(a.size)} · скачать</small></span></a>`;
 const REPEAT_RU = {daily:'каждый день', weekdays:'по будням', days:'по дням недели', monthly:'каждый месяц'};
 const nowHM = () => { const d = new Date(); return String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0'); };
 const late = t => t.status!=='done' && t.due && (t.due < TODAY || (t.due===TODAY && t.dueTime && nowHM() >= t.dueTime));
@@ -813,7 +816,7 @@ function openNew(forUser){
     <div class="field"><label for="n-rem">Напомнить в Telegram</label><input type="datetime-local" id="n-rem"></div></div>
     <div class="field" id="n-days-f" hidden><label>Дни недели</label><div class="wdchips">${WD_ORDER.map(d=>`<label class="wdc"><input type="checkbox" name="n-wd" value="${d}" ${d>=1&&d<=5?'checked':''}><span>${WD[d]}</span></label>`).join('')}</div></div>
     <div class="field"><label for="n-check">Чек-лист <span class="note">(необязательно, каждый пункт с новой строки)</span></label><textarea id="n-check" rows="3" placeholder="Открыть кассу&#10;Проверить остатки&#10;Отправить отчёт"></textarea></div>
-    <div class="opts"><label class="opt"><input type="checkbox" id="n-photo"><span>📸 Нужен фото-отчёт о выполнении</span></label></div>
+    <div class="opts"><label class="opt"><input type="checkbox" id="n-photo"><span>📎 Нужен отчёт о выполнении (фото или файл)</span></label></div>
     <div class="mact"><button type="button" class="btn" data-close="1">Отмена</button><button class="btn primary" type="submit">${mgr?'Поставить и уведомить':'Добавить'}</button></div>
   </form>`);
   setTimeout(()=>$('n-title').focus(),30);
@@ -826,7 +829,7 @@ function openTask(id){
     ${t.desc?`<p style="margin:0 0 12px;color:var(--muted);white-space:pre-line">${esc(t.desc)}</p>`:''}
     <dl class="dl"><dt>Исполнитель</dt><dd>${esc(a.name)}${a.title?' · '+esc(a.title):''}</dd><dt>Поставил</dt><dd>${esc(au.name)}</dd><dt>Срок</dt><dd${late(t)?' style="color:var(--bad);font-weight:700"':''}>${dueText(t)}${t.ext?` <span class="note">· продлевали ${t.ext} раз</span>`:''}</dd><dt>Приоритет</dt><dd class="p-${t.priority}">${PRIO[t.priority]}</dd>${t.remind?`<dt>Напомнить в</dt><dd>${fmtDT(t.remind)}</dd>`:''}</dl>
     ${t.series?`<div class="serbox">🔁 Повторяется: <b>${esc(REPEAT_RU[t.series.repeat]||'')}</b>${t.series.active?'':' · остановлено'}${t.series.active&&(t.author===S.me||isOwner())?` <button type="button" class="linkbtn" data-stopser="${t.series.id}">Остановить повтор</button>`:''}</div>`:''}
-    ${t.photo?`<div class="serbox">📸 Нужен фото-отчёт — исполнитель отправляет фото ответом на сообщение бота</div>`:''}
+    ${t.photo?`<div class="serbox">📎 Нужен отчёт — фото или файл. Задача закроется, когда исполнитель его приложит.</div>`:''}
     ${t.checklist.length?`<div class="field"><label>Чек-лист · ${t.checklist.filter(c=>c.d).length} из ${t.checklist.length}</label></div><div class="cklist">${t.checklist.map((c,i)=>`<label class="ck ${c.d?'on':''}"><input type="checkbox" data-ck="${t.id}|${i}" ${c.d?'checked':''} ${canStatus?'':'disabled'}><span>${esc(c.t)}</span></label>`).join('')}</div>`:''}
     ${t.assignee===S.me&&t.author!==S.me&&t.status!=='done'?`<div style="margin:0 0 10px"><button type="button" class="btn sm" data-more="${t.id}">⏳ Нужно больше времени</button></div>`:''}
     ${t.status!=='done'&&(t.assignee===S.me||t.author===S.me)?`<div class="serbox remrow"><span>${t.remindOff?'🔕 Напоминания выключены':t.snoozeUntil?`⏰ Напомню ${t.snoozeUntil.slice(0,10)===TODAY?'сегодня':fmt(t.snoozeUntil)} в ${t.snoozeUntil.slice(11,16)}`:'🔔 Напоминание перед сроком включено'}${t.seenAt?` · 👀 видел(а) ${t.seenAt.slice(0,10)===TODAY?'':fmt(t.seenAt)+' '}${t.seenAt.slice(11,16)}`:''}</span>
@@ -836,7 +839,8 @@ function openTask(id){
       <form class="extrow" id="ext-form" data-id="${t.id}" style="margin-top:8px"><input type="date" id="ext-due" value="${t.due>=TODAY?addDays(t.due,1):addDays(TODAY,1)}" min="${TODAY}" aria-label="Новая дата"><input type="time" id="ext-time" value="${t.dueTime||''}" aria-label="Время (необязательно)"><button class="btn sm primary" type="submit">Назначить срок</button></form></div>`:''}
     ${canStatus?`<div class="field"><label>Статус</label></div><div class="stat-row">${Object.keys(STATUS).map(s=>`<button type="button" class="${t.status===s?'sel':''}" data-status="${t.id}|${s}">${STATUS[s]}</button>`).join('')}</div>`:''}
     <div class="field"><label>Комментарии</label></div>
-    ${t.comments.map(c=>`<div class="cm"><b>${esc(U(c.u).name)}</b><time>${fmtDT(c.at)}</time><div>${esc(c.t)}</div>${c.f?`<a href="/api/comments/${c.id}/file" target="_blank" rel="noopener"><img class="cm-img" src="/api/comments/${c.id}/file" alt="Фото к задаче" loading="lazy"></a>`:''}</div>`).join('') || '<div class="note" style="margin-bottom:8px">Пока нет комментариев</div>'}
+    ${t.comments.map(c=>`<div class="cm"><b>${esc(U(c.u).name)}</b><time>${fmtDT(c.at)}</time>${c.a && c.t.replace(/^📎\s*/,'')===c.a.name ? '' : `<div>${esc(c.a ? c.t.replace(/^📎\s*/,'').replace(c.a.name+' — ','') : c.t)}</div>`}${c.f?`<a href="/api/comments/${c.id}/file" target="_blank" rel="noopener"><img class="cm-img" src="/api/comments/${c.id}/file" alt="Фото к задаче" loading="lazy"></a>`:''}${c.a?attachView(c.a):''}</div>`).join('') || '<div class="note" style="margin-bottom:8px">Пока нет комментариев</div>'}
+    <div class="attbar"><label class="btn sm" for="att-input">📎 Прикрепить файл</label><input type="file" id="att-input" data-task="${t.id}" multiple hidden><span class="note">до 20 МБ: документ, таблица, PDF, фото, видео${t.status!=='done'&&t.assignee===S.me?' · можно сдать задачу с файлом':''}</span></div>
     <form class="add" id="add-cm" data-id="${t.id}"><input id="cm-text" placeholder="Написать комментарий" aria-label="Комментарий" autocomplete="off"><button class="btn" type="submit">Отправить</button></form>
     <div class="mact">${t.author===S.me||isOwner()?`<button type="button" class="btn" data-delete="${t.id}" style="color:var(--bad)">Удалить задачу</button>`:''}<button type="button" class="btn" data-close="1">Закрыть</button></div>
   </div>`);
@@ -1100,6 +1104,16 @@ document.addEventListener('submit', async e => {
 document.addEventListener('change', e => {
   const id = e.target.id;
   if(e.target.dataset && e.target.dataset.ck){ const [tid,ix]=e.target.dataset.ck.split('|'); return (async()=>{ try { await api('POST',`/api/tasks/${tid}/check`,{idx:Number(ix)}); await reload(); render(); openTask(Number(tid)); } catch(err){ toast(err.message); } })(); }
+  if(id==='att-input' && e.target.files.length){ const tid = Number(e.target.dataset.task); const files=[...e.target.files]; return (async()=>{
+    for(const f of files){
+      if(f.size > 20*1048576){ toast(`«${f.name}» больше 20 МБ`); continue; }
+      toast(`Загружаю «${f.name}»…`);
+      try { const r = await fetch(`/api/tasks/${tid}/files`, {method:'POST', headers:{'content-type': f.type||'application/octet-stream', 'x-file-name': encodeURIComponent(f.name)}, body: f, credentials:'same-origin'});
+        const j = await r.json().catch(()=>({})); if(!r.ok) throw new Error(j.error||'Не удалось загрузить файл'); LAST_MUT = Date.now();
+        toast(j.closed ? '✅ Файл принят как отчёт — задача выполнена' : `📎 «${f.name}» прикреплён`);
+      } catch(err){ toast(err.message); }
+    }
+    await reload(); render(); openTask(tid); })(); }
   if(id==='n-rep'){ const v=e.target.value; $('n-days-f').hidden = v!=='days'; $('n-due-l').textContent = v ? 'Начать с' : 'Срок'; if(v && $('n-due').value===addDays(TODAY,1)) $('n-due').value = TODAY; return; }
   if(id==='bud-add' && e.target.value){ WBUD = e.target.value; WAL.budgets[WBUD] = WAL.budgets[WBUD] || 0; render(); setTimeout(()=>$('bud-amount')?.focus(),20); return; }
   if(id==='f-who'){ F.who = e.target.value; return render(); }
