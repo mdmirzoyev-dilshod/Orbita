@@ -39,6 +39,11 @@ button{cursor:pointer}
 .ws .logo{width:34px;height:34px;border-radius:10px;background:var(--ink);color:#fff;display:grid;place-items:center;font-weight:800;font-size:12px;letter-spacing:.02em}
 .ws b{display:block;font-size:13.5px}
 .ws small{display:block;color:var(--muted);font-size:11.5px}
+.ws .logo{flex:none;overflow:hidden}
+.ws .logo.img{background:#fff!important;border:1px solid var(--line)}
+.ws .logo img{width:100%;height:100%;object-fit:contain;display:block}
+.logorow{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.logorow .ws{padding:0}
 .area{padding:4px 8px 0}
 .eyebrow{font-size:10.5px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--blue)}
 .area h2{font-size:22px;font-weight:800;margin:4px 0 2px;letter-spacing:-.02em}

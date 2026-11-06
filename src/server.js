@@ -67,12 +67,14 @@ async function startSession(res, userId, req) {
 }
 
 /* ---------- вход ---------- */
+// OPEN_SIGNUP=1 — открыть создание компаний всем (только для локальных тестов); по умолчанию — только администратор платформы
+const canCreateCompany = async user => process.env.OPEN_SIGNUP === '1' || Boolean(await B.isPlatformAdmin(user));
 app.get('/api/me', wrap(async (req, res) => {
   const s = await loadSession(req);
   const base = { bot: tg.botUsername(), botReady: tg.enabled(), devLogin: process.env.DEV_LOGIN === '1' };
   if (!s) return res.json({ ...base, user: null });
   const companies = await db.all(`SELECT m.id AS member_id, m.role, c.id, c.name FROM members m JOIN companies c ON c.id=m.company_id WHERE m.user_id=$1 AND m.active ORDER BY m.created_at`, [s.user.id]);
-  res.json({ ...base, user: s.user, member: s.member ? s.member.id : null, companies, viewingAs: Boolean(s.back) });
+  res.json({ ...base, user: s.user, member: s.member ? s.member.id : null, companies, viewingAs: Boolean(s.back), canCreateCompany: await canCreateCompany(s.user) });
 }));
 
 app.post('/api/auth/start', wrap(async (req, res) => {
@@ -116,6 +118,8 @@ app.post('/api/company', auth(false), wrap(async (req, res) => {
   const name = clean(req.body.name, 80), title = clean(req.body.title, 60) || 'Директор';
   const myName = clean(req.body.myName, 60);
   if (!name) return res.status(400).json({ error: 'Введите название компании' });
+  // новые компании создаёт только администратор платформы; остальные попадают в компанию по приглашению
+  if (!(await canCreateCompany(req.s.user))) return res.status(403).json({ error: 'Новую компанию может создать только администратор «Орбиты». Чтобы войти в команду, откройте ссылку-приглашение от руководителя.' });
   const m = await db.tx(async c => {
     const co = (await c.query(`INSERT INTO companies (name) VALUES ($1) RETURNING *`, [name])).rows[0];
     const d = (await c.query(`INSERT INTO depts (company_id, name, color) VALUES ($1,'Руководство',$2) RETURNING *`, [co.id, DEPT_COLORS[0]])).rows[0];
@@ -212,7 +216,7 @@ app.get('/api/state', auth(), wrap(async (req, res) => {
   }
   res.json({
     today: t0,
-    company: { id: co.id, name: co.name },
+    company: { id: co.id, name: co.name, logo: co.logo_mime ? co.logo_v : null },
     me: me.id,
     myRole: me.role,
     isAdmin: L.isAdmin(me),
@@ -658,6 +662,27 @@ app.patch('/api/company', auth(), wrap(async (req, res) => {
   const name = clean(req.body.name, 80);
   if (name) await db.q(`UPDATE companies SET name=$1 WHERE id=$2`, [name, req.me.company_id]);
   res.json({ ok: true });
+}));
+// логотип компании (в верхней панели): загружает и убирает руководство, видят участники компании
+const LOGO_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'];
+app.post('/api/company/logo', auth(), express.raw({ type: () => true, limit: 2 * 1048576 }), wrap(async (req, res) => {
+  if (!L.isAdmin(req.me)) return res.status(403).json({ error: 'Логотип меняет учредитель, владелец или директор' });
+  const mime = String(req.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
+  if (!LOGO_TYPES.includes(mime)) return res.status(400).json({ error: 'Нужна картинка PNG, JPG, WEBP или GIF' });
+  if (!Buffer.isBuffer(req.body) || !req.body.length) return res.status(400).json({ error: 'Файл пустой' });
+  const r = await db.one(`UPDATE companies SET logo=$1, logo_mime=$2, logo_v=logo_v+1 WHERE id=$3 RETURNING logo_v`, [req.body, mime, req.me.company_id]);
+  res.json({ ok: true, logo: r.logo_v });
+}));
+app.delete('/api/company/logo', auth(), wrap(async (req, res) => {
+  if (!L.isAdmin(req.me)) return res.status(403).json({ error: 'Логотип меняет учредитель, владелец или директор' });
+  await db.q(`UPDATE companies SET logo=NULL, logo_mime=NULL, logo_v=logo_v+1 WHERE id=$1`, [req.me.company_id]);
+  res.json({ ok: true });
+}));
+app.get('/api/company/:id/logo', auth(false), wrap(async (req, res) => {
+  const co = await db.one(`SELECT c.logo, c.logo_mime FROM companies c JOIN members m ON m.company_id=c.id AND m.user_id=$2 AND m.active WHERE c.id=$1`, [Number(req.params.id), req.s.user.id]);
+  if (!co || !co.logo) return res.status(404).end();
+  res.set({ 'Content-Type': co.logo_mime, 'Cache-Control': 'private, max-age=31536000, immutable', 'X-Content-Type-Options': 'nosniff' });
+  res.end(co.logo);
 }));
 app.patch('/api/profile', auth(false), wrap(async (req, res) => {
   const name = clean(req.body.name, 60);

@@ -297,6 +297,7 @@ async function migrate() {
   await q(`ALTER TABLE companies ADD COLUMN IF NOT EXISTS paid_until DATE`);
   await q(`ALTER TABLE comments ADD COLUMN IF NOT EXISTS file_id TEXT`);
   await q(`ALTER TABLE comments ADD COLUMN IF NOT EXISTS attach_id INT`);
+  await q(`ALTER TABLE companies ADD COLUMN IF NOT EXISTS logo BYTEA, ADD COLUMN IF NOT EXISTS logo_mime TEXT, ADD COLUMN IF NOT EXISTS logo_v INT NOT NULL DEFAULT 0`);
   for (const col of ["seen_at TIMESTAMP", "snooze_until TIMESTAMP", "remind_off BOOLEAN NOT NULL DEFAULT false", "updated_at TIMESTAMPTZ NOT NULL DEFAULT now()"]) await q(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS ${col}`);
   await q(`ALTER TABLE plan_items ADD COLUMN IF NOT EXISTS snooze_until TIMESTAMP`);
   for (const col of ["kind TEXT", "plan_id INT"]) await q(`ALTER TABLE tg_msgs ADD COLUMN IF NOT EXISTS ${col}`);

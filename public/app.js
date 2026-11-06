@@ -159,6 +159,10 @@ async function screenJoin(code){
   startConstellation(true);
 }
 function screenOnboard(another){
+  if(!ME.canCreateCompany){
+    $('root').innerHTML = authShell(`${brand()}<h1>Вас ещё не добавили в команду</h1><p>Вы вошли как <b>${esc(ME.user.name)}</b>. Чтобы начать работу, попросите руководителя прислать ссылку-приглашение и откройте её — компания появится сама.</p><p class="note">Подключить новую компанию к «Орбите» можно через администратора.</p>${another?'<button class="linkbtn" data-act="back">← Вернуться в мою компанию</button>':'<button class="linkbtn" data-act="logout">Выйти</button>'}`);
+    return startConstellation(true);
+  }
   $('root').innerHTML = authShell(`${brand()}<h1>${another?'Новая компания':'Создайте свою компанию'}</h1><p>Вы станете владельцем: сможете приглашать руководителей и сотрудников и ставить задачи.</p>
     <form id="newco" style="display:flex;flex-direction:column;gap:2px">
       <div class="field"><label for="co-me">Как вас подписать</label><input id="co-me" value="${esc(ME.user.name)}" required></div>
@@ -191,12 +195,18 @@ const AREA = {
 };
 function shell(){
   $('root').innerHTML = `<div class="app"><aside class="side">
-      <div class="ws"><div class="logo">${esc(initials(S.company.name))}</div><div><b>${esc(S.company.name)}</b><small>Орбита · Бизнес</small></div></div>
+      <div class="ws">${coLogo()}<div><b>${esc(S.company.name)}</b><small>Орбита · Бизнес</small></div></div>
       <div class="area" id="area"></div><nav class="nav" id="nav"></nav>
       <div class="me-box" id="mebox"></div>
     </aside><main class="main"><div id="viewbar"></div><div id="main"></div></main></div><nav class="tabbar" id="tabbar"></nav>`;
 }
-const coSwitch = id => `<select id="${id}" class="coswitch" aria-label="Компания">${ME.companies.map(c=>`<option value="${c.member_id}" ${c.member_id===S.me?'selected':''}>${esc(c.name)}${c.role==='owner'?' · владелец':''}</option>`).join('')}<option value="new">+ Создать новую компанию…</option></select>`;
+const coSwitch = id => `<select id="${id}" class="coswitch" aria-label="Компания">${ME.companies.map(c=>`<option value="${c.member_id}" ${c.member_id===S.me?'selected':''}>${esc(c.name)}${c.role==='owner'?' · владелец':''}</option>`).join('')}${ME.canCreateCompany?'<option value="new">+ Создать новую компанию…</option>':''}</select>`;
+const coLogo = () => {
+  const inner = S.company.logo!=null ? `<img src="/api/company/${S.company.id}/logo?v=${S.company.logo}" alt="Логотип ${esc(S.company.name)}">` : esc(initials(S.company.name));
+  return isOwner()
+    ? `<label class="logo ${S.company.logo!=null?'img':''}" for="logo-input" title="${S.company.logo!=null?'Сменить логотип':'Загрузить логотип компании'}" style="cursor:pointer">${inner}<input type="file" id="logo-input" accept="image/png,image/jpeg,image/webp,image/gif" hidden></label>`
+    : `<div class="logo ${S.company.logo!=null?'img':''}">${inner}</div>`;
+};
 const initials = s => (s||'?').split(/\s+/).filter(Boolean).slice(0,2).map(w=>w[0]).join('').toUpperCase();
 function renderViewbar(){ const v=$('viewbar'); if(!v) return; v.innerHTML = ME && ME.viewingAs ? `<div class="viewbar">👁 Вы смотрите «Орбиту» как <b>${esc(me().name)}</b> (${esc(me().title||'')}). Действия выполняются от его имени.<button class="btn sm y" data-act="viewback">Вернуться к себе</button></div>` : ''; }
 function renderNav(){
@@ -941,7 +951,8 @@ function openEditMember(id){
 function openProfile(){
   modal(`<form class="modal" id="profile-form" role="dialog" aria-label="Профиль"><h2>Ваш профиль</h2>
     <div class="field"><label for="p-name">Имя и фамилия</label><input id="p-name" value="${esc(me().name)}" required></div>
-    ${isOwner()?`<div class="field"><label for="p-co">Название компании</label><input id="p-co" value="${esc(S.company.name)}" required></div>`:''}
+    ${isOwner()?`<div class="field"><label for="p-co">Название компании</label><input id="p-co" value="${esc(S.company.name)}" required></div>
+    <div class="field"><label>Логотип компании</label><div class="logorow"><span class="ws">${coLogo().replace('id="logo-input"','id="logo-input2"').replace('for="logo-input"','for="logo-input2"')}</span><label class="btn sm" for="logo-input2">${S.company.logo!=null?'Сменить':'Загрузить'}</label>${S.company.logo!=null?'<button type="button" class="btn sm" data-act="logo-del" style="color:var(--bad)">Убрать</button>':''}<span class="note">PNG, JPG, WEBP · до 2 МБ · лучше квадратный</span></div></div>`:''}
     <div class="mact"><button type="button" class="btn" data-close="1">Отмена</button><button class="btn primary" type="submit">Сохранить</button></div></form>`);
 }
 
@@ -1010,6 +1021,7 @@ document.addEventListener('click', e => {
   if(el.dataset.sw){ const k=el.dataset.sw; const cur = mySettings()[k]!==false; return act(()=>api('PATCH','/api/settings',{[k]:!cur}),'Настройка сохранена'); }
   const a = el.dataset.act;
   if(a==='new') return openNew(el.dataset.for);
+  if(a==='logo-del') return (async()=>{ await api('DELETE','/api/company/logo'); LAST_MUT=Date.now(); await reload(); shell(); render(); closeModal(); toast('Логотип убран'); })().catch(err=>toast(err.message));
   if(a==='invite') return openInvite();
   if(a==='demo-add-close'){ closeModal(); return act(()=>api('POST','/api/demo'),'Добавлены 3 демо-сотрудника — теперь им можно ставить задачи').then(()=>openNew()); }
   if(a==='demo-add') return act(()=>api('POST','/api/demo'),'Добавлены 3 демо-сотрудника с задачами').then(()=>{ location.hash='team'; });
@@ -1104,6 +1116,12 @@ document.addEventListener('submit', async e => {
 document.addEventListener('change', e => {
   const id = e.target.id;
   if(e.target.dataset && e.target.dataset.ck){ const [tid,ix]=e.target.dataset.ck.split('|'); return (async()=>{ try { await api('POST',`/api/tasks/${tid}/check`,{idx:Number(ix)}); await reload(); render(); openTask(Number(tid)); } catch(err){ toast(err.message); } })(); }
+  if((id==='logo-input'||id==='logo-input2') && e.target.files.length){ const f=e.target.files[0]; return (async()=>{
+    if(f.size > 2*1048576) return toast('Логотип больше 2 МБ — выберите картинку поменьше');
+    const r = await fetch('/api/company/logo', {method:'POST', headers:{'content-type': f.type||'application/octet-stream'}, body: f, credentials:'same-origin'});
+    const j = await r.json().catch(()=>({})); if(!r.ok) return toast(j.error||'Не удалось загрузить логотип');
+    LAST_MUT = Date.now(); await reload(); shell(); render(); if(id==='logo-input2') closeModal(); toast('Логотип компании обновлён');
+  })(); }
   if(id==='att-input' && e.target.files.length){ const tid = Number(e.target.dataset.task); const files=[...e.target.files]; return (async()=>{
     for(const f of files){
       if(f.size > 20*1048576){ toast(`«${f.name}» больше 20 МБ`); continue; }
