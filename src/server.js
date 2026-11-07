@@ -222,7 +222,7 @@ app.get('/api/state', auth(), wrap(async (req, res) => {
     isAdmin: L.isAdmin(me),
     scope,
     depts: depts.map(d => ({ id: d.id, name: d.name, color: d.color })),
-    users: members.map(m => ({ id: m.id, name: m.name, demo: Boolean(m.demo), role: m.role === 'worker' ? 'worker' : 'manager', level: m.role, owner: m.role === 'owner', admin: L.ADMIN.includes(m.role), dept: m.dept || 'Без отдела', deptId: m.dept_id, deptColor: m.dept_color || '#9AA3C7', plansOn: m.plans_on, walletOn: m.wallet_on, title: m.title || '', boss: m.boss_id, tg: Boolean(m.tg_id) && (m.settings || {}).tg !== false, username: m.username })),
+    users: members.map(m => ({ id: m.id, name: m.name, demo: Boolean(m.demo), role: m.role === 'worker' ? 'worker' : 'manager', level: m.role, pos: m.role === 'owner' ? (m.pos === 'director' ? 'director' : 'founder') : null, owner: m.role === 'owner', admin: L.ADMIN.includes(m.role), dept: m.dept || 'Без отдела', deptId: m.dept_id, deptColor: m.dept_color || '#9AA3C7', plansOn: m.plans_on, walletOn: m.wallet_on, title: m.title || '', boss: m.boss_id, tg: Boolean(m.tg_id) && (m.settings || {}).tg !== false, username: m.username })),
     tasks: tasks.map(t => ({ id: t.id, title: t.title, desc: t.descr, assignee: t.assignee_id, author: t.author_id, priority: t.priority, status: t.status, created: t.created_on, due: t.due, dueTime: t.due_time, ext: t.extended, remind: t.remind_at, doneAt: t.done_on,
       comments: comments.filter(c => c.task_id === t.id).map(c => ({ id: c.id, u: c.member_id, t: c.text, at: c.at, f: Boolean(c.file_id), a: c.attach_id && attMap[c.attach_id] ? { id: c.attach_id, name: attMap[c.attach_id].name, mime: attMap[c.attach_id].mime, size: attMap[c.attach_id].size } : null })),
       seenAt: t.seen_at, snoozeUntil: t.snooze_until, remindOff: t.remind_off, photo: t.requires_photo, checklist: Array.isArray(t.checklist) ? t.checklist : [], series: t.series_id ? { id: t.series_id, repeat: (seriesMap[t.series_id] || {}).repeat, active: (seriesMap[t.series_id] || {}).active } : null })),
@@ -545,20 +545,26 @@ app.patch('/api/members/:id', auth(), wrap(async (req, res) => {
   const m = await db.one(`SELECT * FROM members WHERE id=$1 AND company_id=$2`, [Number(req.params.id), req.me.company_id]);
   if (!m) return res.status(404).json({ error: 'Сотрудник не найден' });
   const b = req.body;
-  const role = m.role === 'owner' ? 'owner' : (['founder', 'director', 'manager', 'worker'].includes(b.role) ? b.role : m.role);
+  // владелец остаётся владельцем, но выбирает, кем стоит в структуре: учредителем или директором; себя понизить нельзя
+  const role = m.role === 'owner' || m.id === req.me.id ? m.role : (['founder', 'director', 'manager', 'worker'].includes(b.role) ? b.role : m.role);
+  const pos = m.role === 'owner' && ['founder', 'director'].includes(b.role) ? b.role : m.pos;
   let deptId = b.deptId === undefined ? m.dept_id : (Number(b.deptId) || null);
   const newDept = clean(b.newDept, 40);
   if (newDept) {
     const cnt = await db.one(`SELECT count(*)::int AS n FROM depts WHERE company_id=$1`, [req.me.company_id]);
     deptId = (await db.one(`INSERT INTO depts (company_id, name, color) VALUES ($1,$2,$3) ON CONFLICT (company_id, name) DO UPDATE SET name=EXCLUDED.name RETURNING id`, [req.me.company_id, newDept, DEPT_COLORS[cnt.n % DEPT_COLORS.length]])).id;
   }
-  const bossId = role === 'founder' ? null : (b.bossId === undefined ? m.boss_id : (Number(b.bossId) && Number(b.bossId) !== m.id ? Number(b.bossId) : null));
+  const bossId = role === 'founder' || (role === 'owner' && pos !== 'director') ? null : (b.bossId === undefined ? m.boss_id : (Number(b.bossId) && Number(b.bossId) !== m.id ? Number(b.bossId) : null));
   const active = b.active === false && m.role !== 'owner' ? false : m.active;
-  await db.q(`UPDATE members SET role=$1, dept_id=$2, title=$3, boss_id=$4, active=$5, plans_on=$6, wallet_on=$7 WHERE id=$8`,
-    [role, deptId, b.title !== undefined ? clean(b.title, 60) : m.title, bossId, active, typeof b.plansOn === 'boolean' ? b.plansOn : m.plans_on, typeof b.walletOn === 'boolean' ? b.walletOn : m.wallet_on, m.id]);
+  await db.q(`UPDATE members SET role=$1, dept_id=$2, title=$3, boss_id=$4, active=$5, plans_on=$6, wallet_on=$7, pos=$9 WHERE id=$8`,
+    [role, deptId, (() => { const t = b.title !== undefined ? clean(b.title, 60) : m.title; return role !== m.role && (t === m.title || STD_TITLES.includes(String(t || '').toLowerCase())) ? titleFor(t, role) : t; })(), bossId, active, typeof b.plansOn === 'boolean' ? b.plansOn : m.plans_on, typeof b.walletOn === 'boolean' ? b.walletOn : m.wallet_on, m.id, pos]);
   res.json({ ok: true });
 }));
 /* ---------- отделы и структура компании ---------- */
+// стандартные подписи ролей: при смене роли меняем и их, а свои должности («Продажник», «Главный бухгалтер») не трогаем
+const ROLE_TITLE = { founder: 'Учредитель', director: 'Директор', manager: 'Руководитель отдела', worker: '' };
+const STD_TITLES = ['', 'учредитель', 'директор', 'руководитель отдела', 'руководитель', 'сотрудник', 'работник', 'владелец'];
+const titleFor = (oldTitle, newRole) => STD_TITLES.includes(String(oldTitle || '').trim().toLowerCase()) ? (ROLE_TITLE[newRole] ?? oldTitle) : oldTitle;
 const adminOnly = (req, res) => { if (L.isAdmin(req.me)) return true; res.status(403).json({ error: 'Структуру компании меняют учредитель, владелец или директор' }); return false; };
 const myDept = (req) => db.one(`SELECT * FROM depts WHERE id=$1 AND company_id=$2`, [Number(req.params.id), req.me.company_id]);
 const deptHead = deptId => db.one(`SELECT * FROM members WHERE dept_id=$1 AND role='manager' AND active ORDER BY id LIMIT 1`, [deptId]);
@@ -608,8 +614,9 @@ app.post('/api/depts/:id/head', auth(), wrap(async (req, res) => {
   if (L.isAdmin(m)) return res.status(400).json({ error: 'Учредитель и директор уже руководят всей компанией' });
   const top = await topBoss(req.me.company_id);
   await db.tx(async c => {
-    await c.query(`UPDATE members SET role='worker', boss_id=$2 WHERE dept_id=$1 AND role='manager' AND id<>$3`, [d.id, m.id, m.id]);   // прежний руководитель — в работники отдела
-    await c.query(`UPDATE members SET role='manager', dept_id=$1, boss_id=$2 WHERE id=$3`, [d.id, top && top.id !== m.id ? top.id : null, m.id]);
+    for (const o of (await c.query(`SELECT id, title FROM members WHERE dept_id=$1 AND role='manager' AND id<>$2`, [d.id, m.id])).rows)
+      await c.query(`UPDATE members SET role='worker', boss_id=$2, title=$3 WHERE id=$1`, [o.id, m.id, titleFor(o.title, 'worker')]);   // прежний руководитель — в работники отдела
+    await c.query(`UPDATE members SET role='manager', dept_id=$1, boss_id=$2, title=$4 WHERE id=$3`, [d.id, top && top.id !== m.id ? top.id : null, m.id, titleFor(m.title, 'manager')]);
     await c.query(`UPDATE members SET boss_id=$2 WHERE dept_id=$1 AND role='worker' AND id<>$2`, [d.id, m.id]);
   });
   res.json({ ok: true });

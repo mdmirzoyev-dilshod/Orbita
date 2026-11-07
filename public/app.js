@@ -77,7 +77,7 @@ const me = () => U(S.me);
 const isMgr = () => S.myRole !== 'worker';
 const isOwner = () => Boolean(S.isAdmin);   // учредитель, владелец или директор
 const ROLES = [['worker','Работник'],['manager','Руководитель отдела'],['director','Директор'],['founder','Учредитель']];
-const roleName = u => u.level==='owner' ? 'Владелец' : (ROLES.find(r=>r[0]===u.level)||['',''])[1];
+const roleName = u => u.level==='owner' ? (u.pos==='director'?'Директор · владелец':'Учредитель · владелец') : (ROLES.find(r=>r[0]===u.level)||['',''])[1];
 const roleSelect = (id, sel) => `<select id="${id}">${ROLES.map(([v,l])=>`<option value="${v}" ${v===sel?'selected':''}>${l}</option>`).join('')}</select>`;
 const bossOptions = (except, sel) => S.users.filter(x=>x.role==='manager' && x.id!==except).map(x=>`<option value="${x.id}" ${x.id===sel?'selected':''}>${esc(x.name)}${x.title?' — '+esc(x.title):''}</option>`).join('');
 const fileSize = n => n>=1048576 ? (n/1048576).toFixed(1).replace('.',',')+' МБ' : Math.max(1,Math.round(n/1024))+' КБ';
@@ -359,13 +359,15 @@ function disciplineCard(){
 
 // группа человека в структуре: руководство компании, его отдел или «Без отдела»
 const LEAD = u => u.level==='owner'||u.level==='founder'||u.level==='director';
+const isFounderLvl = u => u.level==='founder' || (u.level==='owner' && u.pos!=='director');
+const isDirLvl = u => u.level==='director' || (u.level==='owner' && u.pos==='director');
 const grp = u => LEAD(u) ? 'Руководство' : (u.deptId && S.depts.some(d=>d.id===u.deptId) ? u.dept : 'Без отдела');
 const grpColor = g => g==='Руководство' ? '#FFD23F' : g==='Без отдела' ? '#9AA3C7' : ((S.depts.find(d=>d.name===g)||{}).color || deptColor(g));
 function groups(list){ const order = [...new Set(['Руководство', ...S.depts.map(d=>d.name), 'Без отдела'])]; return order.filter(g=>list.some(u=>grp(u)===g)); }
 function orgChart(){
   const sc = scope();
   const nd = u => `<div class="nd"><b>${esc(u.name)}</b><small>${esc(u.title||roleName(u))}</small></div>`;
-  const founders = sc.filter(u=>u.level==='owner'||u.level==='founder'), dirs = sc.filter(u=>u.level==='director');
+  const founders = sc.filter(isFounderLvl), dirs = sc.filter(isDirLvl);
   const gs = groups(sc).filter(g=>g!=='Руководство' && (CF==='all'||CF===g));
   let html = `<div class="org">`;
   if(founders.length) html += `<div class="lvl">${founders.map(nd).join('')}</div>`;
@@ -409,7 +411,7 @@ function startConstellation(demo){
   });
   // реальная команда: учредитель в центре, директор рядом, отделы секторами: руководитель отдела ближе, работники — дальше
   if(!demo){
-    const F0 = people.filter(u=>u.level==='owner'||u.level==='founder'), D0 = people.filter(u=>u.level==='director');
+    const F0 = people.filter(isFounderLvl), D0 = people.filter(isDirLvl);
     const centre = F0.length ? F0 : D0, ring = F0.length ? D0 : [];
     const gs = [...new Set(people.filter(u=>!LEAD(u)).map(u=>u.dept))];
     const G = Math.max(1, gs.length), sector = Math.PI*2/G;
@@ -619,18 +621,18 @@ function vTeam(){
       <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--muted);margin-bottom:6px"><span>План дня</span><span class="num" style="color:var(--ink);font-weight:700">${p==null?'—':p+'%'}</span></div>
       <div class="bar"><i style="width:${p||0}%"></i></div>${(()=>{ const d=discipline(u.id); return d.total&&u.id!==S.me?`<div style="display:flex;justify-content:space-between;font-size:12px;color:var(--muted);margin:10px 0 0"><span>Дисциплина · 30 дней</span><span class="num" style="font-weight:700;color:${d.pct>=80?'var(--ok)':d.pct>=50?'var(--warn)':'var(--bad)'}">${d.pct}%</span></div>`:''; })()}`:'<p class="note">Задачи этого сотрудника видит его руководитель.</p>'}
       <div style="display:flex;justify-content:space-between;align-items:center;margin-top:14px;gap:8px;flex-wrap:wrap">${u.demo?'<span class="chip s-review">Демо</span>':`<span class="chip ${u.tg?'s-progress':'s-new'}">${u.tg?'Telegram подключён':'Уведомления выключены'}</span>`}
-      <span style="display:flex;gap:6px;flex-wrap:wrap">${u.demo&&isOwner()?`<button class="btn sm primary" data-act="viewas" data-id="${u.id}">Войти как</button>`:''}${isOwner()&&u.id!==S.me?`<button class="btn sm" data-act="editm" data-id="${u.id}">Изменить</button>`:''}${vis(u.id)&&u.id!==S.me&&isMgr()?`<button class="btn sm" data-act="new" data-for="${u.id}">${ICON.plus}Задача</button>`:''}</span></div></div>`; }).join('')}</div>`;
+      <span style="display:flex;gap:6px;flex-wrap:wrap">${u.demo&&isOwner()?`<button class="btn sm primary" data-act="viewas" data-id="${u.id}">Войти как</button>`:''}${isOwner()?`<button class="btn sm" data-act="editm" data-id="${u.id}">Изменить</button>`:''}${vis(u.id)&&u.id!==S.me&&isMgr()?`<button class="btn sm" data-act="new" data-for="${u.id}">${ICON.plus}Задача</button>`:''}</span></div></div>`; }).join('')}</div>`;
 }
 
 /* ---------- структура компании ---------- */
 function teamView(){ try { return localStorage.getItem('orb_tv') || 'org'; } catch(e){ return 'org'; } }
 function orgNode(u, cls=''){
   const sub = u.title || roleName(u);
-  return `<${isOwner()&&u.id!==S.me?`button type="button" data-act="editm" data-id="${u.id}"`:'div'} class="onode ${cls}">${av(u,32)}<span><b>${esc(u.name)}</b><small>${esc(sub)}</small></span></${isOwner()&&u.id!==S.me?'button':'div'}>`;
+  return `<${isOwner()?`button type="button" data-act="editm" data-id="${u.id}" title="Изменить"`:'div'} class="onode ${cls}">${av(u,32)}<span><b>${esc(u.name)}</b><small>${esc(sub)}</small></span></${isOwner()?'button':'div'}>`;
 }
 function vOrg(){
-  const lead = S.users.filter(u=>u.level==='owner'||u.level==='founder');
-  const dirs = S.users.filter(u=>u.level==='director');
+  const lead = S.users.filter(isFounderLvl);
+  const dirs = S.users.filter(isDirLvl);
   const rest = S.users.filter(u=>u.level==='manager'||u.level==='worker');
   const shown = S.depts.filter(d => d.name!=='Руководство' || rest.some(u=>u.deptId===d.id));
   const noDept = rest.filter(u=>!u.deptId || !shown.some(d=>d.id===u.deptId));
@@ -652,7 +654,8 @@ function vOrg(){
   return `<div class="ostruct">
     ${level('Учредитель', lead, 'Не указан')}
     <div class="oline"></div>
-    ${level('Директор', dirs, isOwner()?'Директора пока нет — пригласите его с ролью «Директор»':'Директора пока нет')}
+    ${level('Директор', dirs, isOwner()?'Директора пока нет':'Директора пока нет')}
+    ${isOwner()?`<div style="display:flex;justify-content:center;margin-top:6px"><div style="width:min(320px,100%)">${pick('dirset', dirs.length?'Назначить другого директора…':'Назначить директора…', S.users.filter(u=>!isFounderLvl(u)&&!isDirLvl(u)))}</div></div>`:''}
     <div class="oline"></div>
     <div class="olab" style="text-align:center">Отделы</div>
     ${shown.length ? `<div class="odepts">${shown.map(deptCard).join('')}</div>` : `<div class="card empty" style="text-align:center">Отделов пока нет.${isOwner()?` <button class="btn sm primary" data-act="dept-new">${ICON.plus}Создать первый отдел</button>`:''}</div>`}
@@ -1029,9 +1032,9 @@ function openEditMember(id){
     <div class="frow"><div class="field"><label for="e-title">Должность</label><input id="e-title" value="${esc(u.title)}"></div>
     <div class="field"><label for="e-dept">Отдел</label><select id="e-dept">${deptOptions(u.deptId)}</select></div></div>
     <div class="field" id="e-newdept-f" hidden><label for="e-newdept">Название нового отдела</label><input id="e-newdept"></div>
-    <div class="frow">${u.owner?'':`<div class="field"><label for="e-role">Роль</label>${roleSelect('e-role',u.level)}</div>`}
-    <div class="field" id="e-boss-f" ${u.level==='founder'?'hidden':''}><label for="e-boss">Подчиняется</label><select id="e-boss"><option value="">—</option>${bossOptions(id, u.boss)}</select></div></div>
-    <div class="mact">${u.owner?'':`<button type="button" class="btn" data-act="deactivate" data-id="${id}" style="color:var(--bad);margin-right:auto">Убрать из команды</button>`}<button type="button" class="btn" data-close="1">Отмена</button><button class="btn primary" type="submit">Сохранить</button></div>
+    <div class="frow">${u.owner?`<div class="field"><label for="e-role">В структуре — вы</label><select id="e-role"><option value="founder" ${u.pos!=='director'?'selected':''}>Учредитель (владелец)</option><option value="director" ${u.pos==='director'?'selected':''}>Директор (владелец)</option></select></div>`:u.id===S.me?'':`<div class="field"><label for="e-role">Роль</label>${roleSelect('e-role',u.level)}</div>`}
+    <div class="field" id="e-boss-f" ${u.level==='founder'||(u.owner&&u.pos!=='director')?'hidden':''}><label for="e-boss">Подчиняется</label><select id="e-boss"><option value="">—</option>${bossOptions(id, u.boss)}</select></div></div>
+    <div class="mact">${u.owner||u.id===S.me?'':`<button type="button" class="btn" data-act="deactivate" data-id="${id}" style="color:var(--bad);margin-right:auto">Убрать из команды</button>`}<button type="button" class="btn" data-close="1">Отмена</button><button class="btn primary" type="submit">Сохранить</button></div>
   </form>`);
 }
 function openProfile(){
@@ -1236,6 +1239,8 @@ document.addEventListener('change', e => {
   if(id==='pe-time'){ $('pe-remind').disabled = !e.target.value; if(!e.target.value) $('pe-remind').checked=false; }
   if(id==='i-role'){ const f = e.target.value==='founder'; $('i-boss-f').hidden = f; $('i-founder-note').hidden = !f; }
   if(id==='e-role') $('e-boss-f').hidden = e.target.value==='founder';
+  if(e.target.dataset && e.target.dataset.dirset && e.target.value){ const f = S.users.find(isFounderLvl);
+    return act(()=>api('PATCH','/api/members/'+e.target.value,{role:'director', title:'Директор', bossId: f?f.id:null}),'Директор назначен'); }
   if(e.target.dataset && (e.target.dataset.dhead || e.target.dataset.dmove) && e.target.value){ const t=e.target, head=Boolean(t.dataset.dhead), did=t.dataset.dhead||t.dataset.dmove;
     return act(()=>api('POST',`/api/depts/${did}/${head?'head':'members'}`,{memberId:Number(t.value)}), head?'Руководитель отдела назначен':'Сотрудник переведён в отдел'); }
   if(id==='switchco' || id==='switchco2'){ if(e.target.value==='new'){ S=null; return screenOnboard(true); } return (async()=>{ await api('POST','/api/switch',{memberId:Number(e.target.value)}); location.hash=''; ME = await api('GET','/api/me'); await reload(); shell(); render(); toast('Компания: '+S.company.name); })(); }
