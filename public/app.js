@@ -76,7 +76,7 @@ const U = id => (S.users.find(u=>u.id===id) || {name:'Бывший сотруд�
 const me = () => U(S.me);
 const isMgr = () => S.myRole !== 'worker';
 const isOwner = () => Boolean(S.isAdmin);   // учредитель, владелец или директор
-const ROLES = [['worker','Сотрудник'],['manager','Руководитель отдела'],['director','Директор'],['founder','Учредитель']];
+const ROLES = [['worker','Работник'],['manager','Руководитель отдела'],['director','Директор'],['founder','Учредитель']];
 const roleName = u => u.level==='owner' ? 'Владелец' : (ROLES.find(r=>r[0]===u.level)||['',''])[1];
 const roleSelect = (id, sel) => `<select id="${id}">${ROLES.map(([v,l])=>`<option value="${v}" ${v===sel?'selected':''}>${l}</option>`).join('')}</select>`;
 const bossOptions = (except, sel) => S.users.filter(x=>x.role==='manager' && x.id!==except).map(x=>`<option value="${x.id}" ${x.id===sel?'selected':''}>${esc(x.name)}${x.title?' — '+esc(x.title):''}</option>`).join('');
@@ -569,7 +569,11 @@ function vTeam(){
   const vis = id => S.scope.includes(id);
   const hasDemo = S.users.some(u=>u.demo);
   const demoBtn = isOwner() ? (hasDemo ? `<button class="btn" data-act="demo-del">Удалить демо</button>` : `<button class="btn" data-act="demo-add">Добавить демо-сотрудников</button>`) : '';
-  return header('Команда<span>›</span>Люди', 'Команда', demoBtn + (isMgr()?`<button class="btn primary" data-act="invite">${ICON.plus}Пригласить</button>`:'')) +
+  const tv = teamView();
+  const tabs = `<div class="filters teamtabs"><div class="tabs" role="tablist"><button class="${tv==='org'?'on':''}" data-tv="org" role="tab" aria-selected="${tv==='org'}">Структура</button><button class="${tv==='people'?'on':''}" data-tv="people" role="tab" aria-selected="${tv==='people'}">Люди</button></div></div>`;
+  const head = header('Команда<span>›</span>'+(tv==='org'?'Структура':'Люди'), 'Команда', (tv==='org'&&isOwner()?`<button class="btn" data-act="dept-new">${ICON.plus}Отдел</button>`:'') + demoBtn + (isMgr()?`<button class="btn primary" data-act="invite">${ICON.plus}Пригласить</button>`:'')) + tabs;
+  if(tv==='org') return head + vOrg() + (isOwner() ? billingCard() : '');
+  return head +
     (isOwner() ? billingCard() : '') +
     (isOwner() && hasDemo ? `<div class="card demo-note"><b>Демо-режим.</b> Нажмите «Войти как» у демо-сотрудника, чтобы увидеть «Орбиту» его глазами: его задачи, план, отметки. Демо-сотрудникам уведомления в Telegram не уходят.</div>` : '') +
     `<div class="grid team">${list.map(u=>{
@@ -581,6 +585,52 @@ function vTeam(){
       <div class="bar"><i style="width:${p||0}%"></i></div>${(()=>{ const d=discipline(u.id); return d.total&&u.id!==S.me?`<div style="display:flex;justify-content:space-between;font-size:12px;color:var(--muted);margin:10px 0 0"><span>Дисциплина · 30 дней</span><span class="num" style="font-weight:700;color:${d.pct>=80?'var(--ok)':d.pct>=50?'var(--warn)':'var(--bad)'}">${d.pct}%</span></div>`:''; })()}`:'<p class="note">Задачи этого сотрудника видит его руководитель.</p>'}
       <div style="display:flex;justify-content:space-between;align-items:center;margin-top:14px;gap:8px;flex-wrap:wrap">${u.demo?'<span class="chip s-review">Демо</span>':`<span class="chip ${u.tg?'s-progress':'s-new'}">${u.tg?'Telegram подключён':'Уведомления выключены'}</span>`}
       <span style="display:flex;gap:6px;flex-wrap:wrap">${u.demo&&isOwner()?`<button class="btn sm primary" data-act="viewas" data-id="${u.id}">Войти как</button>`:''}${isOwner()&&u.id!==S.me?`<button class="btn sm" data-act="editm" data-id="${u.id}">Изменить</button>`:''}${vis(u.id)&&u.id!==S.me&&isMgr()?`<button class="btn sm" data-act="new" data-for="${u.id}">${ICON.plus}Задача</button>`:''}</span></div></div>`; }).join('')}</div>`;
+}
+
+/* ---------- структура компании ---------- */
+function teamView(){ try { return localStorage.getItem('orb_tv') || 'org'; } catch(e){ return 'org'; } }
+function orgNode(u, cls=''){
+  const sub = u.title || roleName(u);
+  return `<${isOwner()&&u.id!==S.me?`button type="button" data-act="editm" data-id="${u.id}"`:'div'} class="onode ${cls}">${av(u,32)}<span><b>${esc(u.name)}</b><small>${esc(sub)}</small></span></${isOwner()&&u.id!==S.me?'button':'div'}>`;
+}
+function vOrg(){
+  const lead = S.users.filter(u=>u.level==='owner'||u.level==='founder');
+  const dirs = S.users.filter(u=>u.level==='director');
+  const rest = S.users.filter(u=>u.level==='manager'||u.level==='worker');
+  const shown = S.depts.filter(d => d.name!=='Руководство' || rest.some(u=>u.deptId===d.id));
+  const noDept = rest.filter(u=>!u.deptId || !shown.some(d=>d.id===u.deptId));
+  const pick = (id, label, list) => list.length ? `<select class="osel" data-${id}="1" aria-label="${label}"><option value="">${label}</option>${list.map(u=>`<option value="${u.id}">${esc(u.name)}${u.dept&&u.dept!=='Без отдела'?' · '+esc(u.dept):''}</option>`).join('')}</select>` : '';
+  const level = (title, people, hint) => `<div class="olevel"><div class="olab">${title}</div><div class="orow">${people.length?people.map(u=>orgNode(u,'otop')).join(''):`<span class="note">${hint}</span>`}</div></div>`;
+  const deptCard = d => {
+    const heads = rest.filter(u=>u.deptId===d.id && u.level==='manager'), ws = rest.filter(u=>u.deptId===d.id && u.level==='worker');
+    const others = rest.filter(u=>u.deptId!==d.id);
+    return `<div class="card odept" style="--dc:${d.color}"><div class="odh"><i></i><b>${esc(d.name)}</b><small>${heads.length+ws.length} чел.</small>
+        ${isOwner()?`<span class="odact"><button class="btn sm" data-act="dept-ren" data-id="${d.id}" title="Переименовать" aria-label="Переименовать отдел">✎</button><button class="btn sm" data-act="dept-del" data-id="${d.id}" title="Удалить отдел" aria-label="Удалить отдел">✕</button></span>`:''}</div>
+      <div class="olab">Руководитель отдела</div>
+      ${heads.length?heads.map(u=>orgNode(u,'ohead')).join(''):`<p class="note" style="margin:2px 0 8px">Не назначен</p>`}
+      ${isOwner()?pick('dhead', heads.length?'Сменить руководителя…':'Назначить руководителя…', rest.filter(u=>!heads.includes(u))).replace('data-dhead="1"',`data-dhead="${d.id}"`):''}
+      <div class="olab" style="margin-top:12px">Работники · ${ws.length}</div>
+      <div class="olist">${ws.length?ws.map(u=>orgNode(u)).join(''):'<p class="note" style="margin:2px 0">Пока никого</p>'}</div>
+      ${isOwner()?`<div class="odfoot"><button class="btn sm primary" data-act="invite-dept" data-id="${d.id}">${ICON.plus}Пригласить в отдел</button>${pick('dmove','Перевести сюда…', others).replace('data-dmove="1"',`data-dmove="${d.id}"`)}</div>`:''}
+    </div>`;
+  };
+  return `<div class="org">
+    ${level('Учредитель', lead, 'Не указан')}
+    <div class="oline"></div>
+    ${level('Директор', dirs, isOwner()?'Директора пока нет — пригласите его с ролью «Директор»':'Директора пока нет')}
+    <div class="oline"></div>
+    <div class="olab" style="text-align:center">Отделы</div>
+    ${shown.length ? `<div class="odepts">${shown.map(deptCard).join('')}</div>` : `<div class="card empty" style="text-align:center">Отделов пока нет.${isOwner()?` <button class="btn sm primary" data-act="dept-new">${ICON.plus}Создать первый отдел</button>`:''}</div>`}
+    ${noDept.length?`<div class="card odept" style="--dc:#9AA3C7;margin-top:14px"><div class="odh"><i></i><b>Без отдела</b><small>${noDept.length} чел.</small></div><div class="olist">${noDept.map(u=>orgNode(u)).join('')}</div>${isOwner()?'<p class="note" style="margin:8px 0 0">Распределите их: в карточке отдела «Перевести сюда…»</p>':''}</div>`:''}
+  </div>`;
+}
+function openDept(id){
+  const d = id ? S.depts.find(x=>x.id===id) : null;
+  modal(`<form class="modal" id="dept-form" data-id="${id||''}" role="dialog" aria-label="Отдел"><h2>${d?'Переименовать отдел':'Новый отдел'}</h2>
+    <div class="field"><label for="d-name">Название отдела</label><input id="d-name" value="${d?esc(d.name):''}" placeholder="Например: Отдел продаж" maxlength="40" required></div>
+    ${d?'':'<p class="note" style="margin:-4px 0 12px">Потом назначьте руководителя отдела и добавьте работников — структура соберётся сама.</p>'}
+    <div class="mact"><button type="button" class="btn" data-close="1">Отмена</button><button class="btn primary" type="submit">${d?'Сохранить':'Создать отдел'}</button></div></form>`);
+  setTimeout(()=>$('d-name')&&$('d-name').focus(),50);
 }
 
 /* ---------- уведомления ---------- */
@@ -922,13 +972,13 @@ function openPlanEdit(id){
   </form>`);
 }
 function deptOptions(sel){ return S.depts.map(d=>`<option value="${d.id}" ${String(sel)===String(d.id)?'selected':''}>${esc(d.name)}</option>`).join('') + '<option value="new">+ Новый отдел…</option>'; }
-function openInvite(){
-  const myDept = me().deptId;
+function openInvite(presetDept){
+  const myDept = presetDept || me().deptId;
   modal(`<form class="modal" id="invite-form" role="dialog" aria-label="Пригласить сотрудника">
     <h2>Пригласить сотрудника</h2>
     <p class="note" style="margin:-6px 0 14px">Создадим ссылку. Отправьте её сотруднику в Telegram — он войдёт и сразу попадёт в вашу команду.</p>
     <div class="frow"><div class="field"><label for="i-title">Должность</label><input id="i-title" placeholder="Должность сотрудника"></div>
-    <div class="field"><label for="i-dept">Отдел</label><select id="i-dept">${deptOptions(isOwner()?'':myDept)}</select></div></div>
+    <div class="field"><label for="i-dept">Отдел</label><select id="i-dept">${deptOptions(isOwner()&&!presetDept?'':myDept)}</select></div></div>
     <div class="field" id="i-newdept-f" hidden><label for="i-newdept">Название нового отдела</label><input id="i-newdept" placeholder="Название отдела"></div>
     ${isOwner()?`<div class="frow"><div class="field"><label for="i-role">Роль</label>${roleSelect('i-role','worker')}</div>
     <div class="field" id="i-boss-f"><label for="i-boss">Подчиняется</label><select id="i-boss">${bossOptions(null, S.me)}</select></div></div>
@@ -983,11 +1033,12 @@ async function boot(){
 
 /* ---------- события ---------- */
 document.addEventListener('click', e => {
-  const el = e.target.closest('[data-snz],[data-roff],[data-theme-set],[data-stopser],[data-more],[data-pay],[data-pt],[data-addon],[data-admpay],[data-ext],[data-wk],[data-wcat],[data-wedit],[data-wdel],[data-bud],[data-act],[data-open],[data-tick],[data-plan],[data-pdel],[data-pedit],[data-hedit],[data-hdel],[data-hab],[data-status],[data-close],[data-delete],[data-sw],[data-cf],[data-view],[data-mode]');
+  const el = e.target.closest('[data-snz],[data-roff],[data-tv],[data-theme-set],[data-stopser],[data-more],[data-pay],[data-pt],[data-addon],[data-admpay],[data-ext],[data-wk],[data-wcat],[data-wedit],[data-wdel],[data-bud],[data-act],[data-open],[data-tick],[data-plan],[data-pdel],[data-pedit],[data-hedit],[data-hdel],[data-hab],[data-status],[data-close],[data-delete],[data-sw],[data-cf],[data-view],[data-mode]');
   if(!el) return;
   if(el.dataset.close && e.target !== el && !e.target.closest('button[data-close]')) return;
   if(el.dataset.snz || el.dataset.roff){ const [id,v] = (el.dataset.snz||el.dataset.roff).split('|'); const body = el.dataset.snz ? {snooze:v} : {off: v==='1'};
     return (async()=>{ try { await api('POST',`/api/tasks/${id}/remind`, body); await reload(); render(); openTask(Number(id)); toast(el.dataset.snz ? 'Напомню позже — в боте тоже' : (v==='1' ? 'Напоминания выключены' : 'Напоминания включены')); } catch(err){ toast(err.message); } })(); }
+  if(el.dataset.tv){ try{ localStorage.setItem('orb_tv', el.dataset.tv); }catch(err){} return render(); }
   if(el.dataset.themeSet){ document.documentElement.dataset.theme = el.dataset.themeSet; try{ localStorage.setItem('orb-theme', el.dataset.themeSet); }catch(err){} return render(); }
   if(el.dataset.pay) return openPay(el.dataset.pay);
   if(el.dataset.more){ const id=Number(el.dataset.more); return (async()=>{ try { await api('POST',`/api/tasks/${id}/more`); await reload(); render(); openTask(id); toast('Запрос отправлен — руководитель сможет продлить срок'); } catch(err){ toast(err.message); } })(); }
@@ -1024,6 +1075,10 @@ document.addEventListener('click', e => {
   if(a==='new') return openNew(el.dataset.for);
   if(a==='logo-del') return (async()=>{ await api('DELETE','/api/company/logo'); LAST_MUT=Date.now(); await reload(); shell(); render(); closeModal(); toast('Логотип убран'); })().catch(err=>toast(err.message));
   if(a==='invite') return openInvite();
+  if(a==='invite-dept'){ const did=Number(el.dataset.id); openInvite(did); const h=S.users.find(u=>u.deptId===did&&u.level==='manager'); if(h&&$('i-boss')) $('i-boss').value=h.id; return; }
+  if(a==='dept-new') return openDept();
+  if(a==='dept-ren') return openDept(Number(el.dataset.id));
+  if(a==='dept-del'){ if(el.dataset.confirm!=='1'){ el.dataset.confirm='1'; el.textContent='Удалить?'; el.style.color='var(--bad)'; return; } return act(()=>api('DELETE','/api/depts/'+el.dataset.id),'Отдел удалён — люди перешли в «Без отдела»'); }
   if(a==='demo-add-close'){ closeModal(); return act(()=>api('POST','/api/demo'),'Добавлены 3 демо-сотрудника — теперь им можно ставить задачи').then(()=>openNew()); }
   if(a==='demo-add') return act(()=>api('POST','/api/demo'),'Добавлены 3 демо-сотрудника с задачами').then(()=>{ location.hash='team'; });
   if(a==='demo-del'){ if(el.dataset.confirm!=='1'){ el.dataset.confirm='1'; el.textContent='Точно удалить демо?'; return; } return act(()=>api('DELETE','/api/demo'),'Демо-сотрудники удалены'); }
@@ -1096,6 +1151,8 @@ document.addEventListener('submit', async e => {
     }
     if(f.id==='add-habit'){ const v=$('habit-text').value.trim(); if(!v) return; await api('POST','/api/habits',{name:v}); await reload(); return render(); }
     if(f.id==='add-cm'){ const v=$('cm-text').value.trim(); if(!v) return; await api('POST','/api/tasks/'+f.dataset.id+'/comments',{text:v}); await reload(); render(); openTask(Number(f.dataset.id)); return toast('Комментарий отправлен'); }
+    if(f.id==='dept-form'){ const id=f.dataset.id, name=$('d-name').value.trim(); if(!name) return toast('Введите название отдела');
+      await api(id?'PATCH':'POST', id?'/api/depts/'+id:'/api/depts', {name}); closeModal(); await reload(); render(); return toast(id?'Отдел переименован':'Отдел «'+name+'» создан'); }
     if(f.id==='invite-form'){
       const dept = $('i-dept').value;
       const body = {title:$('i-title').value, deptId: dept==='new'?null:Number(dept), newDept: dept==='new'?$('i-newdept').value:'', role: $('i-role')?$('i-role').value:'worker', bossId: $('i-role')&&$('i-role').value==='founder' ? null : ($('i-boss')?Number($('i-boss').value):S.me)};
@@ -1144,6 +1201,8 @@ document.addEventListener('change', e => {
   if(id==='pe-time'){ $('pe-remind').disabled = !e.target.value; if(!e.target.value) $('pe-remind').checked=false; }
   if(id==='i-role'){ const f = e.target.value==='founder'; $('i-boss-f').hidden = f; $('i-founder-note').hidden = !f; }
   if(id==='e-role') $('e-boss-f').hidden = e.target.value==='founder';
+  if(e.target.dataset && (e.target.dataset.dhead || e.target.dataset.dmove) && e.target.value){ const t=e.target, head=Boolean(t.dataset.dhead), did=t.dataset.dhead||t.dataset.dmove;
+    return act(()=>api('POST',`/api/depts/${did}/${head?'head':'members'}`,{memberId:Number(t.value)}), head?'Руководитель отдела назначен':'Сотрудник переведён в отдел'); }
   if(id==='switchco' || id==='switchco2'){ if(e.target.value==='new'){ S=null; return screenOnboard(true); } return (async()=>{ await api('POST','/api/switch',{memberId:Number(e.target.value)}); location.hash=''; ME = await api('GET','/api/me'); await reload(); shell(); render(); toast('Компания: '+S.company.name); })(); }
   if(id==='s-morning'||id==='s-evening'||id==='s-before') return act(()=>api('PATCH','/api/settings',{[id.slice(2)]: e.target.value}),'Настройка сохранена');
 });

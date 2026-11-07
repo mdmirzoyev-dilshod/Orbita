@@ -558,6 +558,62 @@ app.patch('/api/members/:id', auth(), wrap(async (req, res) => {
     [role, deptId, b.title !== undefined ? clean(b.title, 60) : m.title, bossId, active, typeof b.plansOn === 'boolean' ? b.plansOn : m.plans_on, typeof b.walletOn === 'boolean' ? b.walletOn : m.wallet_on, m.id]);
   res.json({ ok: true });
 }));
+/* ---------- отделы и структура компании ---------- */
+const adminOnly = (req, res) => { if (L.isAdmin(req.me)) return true; res.status(403).json({ error: 'Структуру компании меняют учредитель, владелец или директор' }); return false; };
+const myDept = (req) => db.one(`SELECT * FROM depts WHERE id=$1 AND company_id=$2`, [Number(req.params.id), req.me.company_id]);
+const deptHead = deptId => db.one(`SELECT * FROM members WHERE dept_id=$1 AND role='manager' AND active ORDER BY id LIMIT 1`, [deptId]);
+// над руководителем отдела — директор (если есть), иначе учредитель/владелец
+const topBoss = companyId => db.one(`SELECT id FROM members WHERE company_id=$1 AND active AND role IN ('director','founder','owner') ORDER BY (role='director') DESC, (role='owner') DESC, id LIMIT 1`, [companyId]);
+app.post('/api/depts', auth(), wrap(async (req, res) => {
+  if (!adminOnly(req, res)) return;
+  const name = clean(req.body.name, 40);
+  if (!name) return res.status(400).json({ error: 'Введите название отдела' });
+  if (await db.one(`SELECT 1 FROM depts WHERE company_id=$1 AND lower(name)=lower($2)`, [req.me.company_id, name])) return res.status(400).json({ error: 'Такой отдел уже есть' });
+  const cnt = await db.one(`SELECT count(*)::int AS n FROM depts WHERE company_id=$1`, [req.me.company_id]);
+  const d = await db.one(`INSERT INTO depts (company_id, name, color) VALUES ($1,$2,$3) RETURNING *`, [req.me.company_id, name, DEPT_COLORS[cnt.n % DEPT_COLORS.length]]);
+  res.json({ ok: true, id: d.id });
+}));
+app.patch('/api/depts/:id', auth(), wrap(async (req, res) => {
+  if (!adminOnly(req, res)) return;
+  const d = await myDept(req); if (!d) return res.status(404).json({ error: 'Отдел не найден' });
+  const name = clean(req.body.name, 40);
+  if (!name) return res.status(400).json({ error: 'Введите название отдела' });
+  if (await db.one(`SELECT 1 FROM depts WHERE company_id=$1 AND lower(name)=lower($2) AND id<>$3`, [req.me.company_id, name, d.id])) return res.status(400).json({ error: 'Такой отдел уже есть' });
+  await db.q(`UPDATE depts SET name=$1 WHERE id=$2`, [name, d.id]);
+  res.json({ ok: true });
+}));
+app.delete('/api/depts/:id', auth(), wrap(async (req, res) => {
+  if (!adminOnly(req, res)) return;
+  const d = await myDept(req); if (!d) return res.status(404).json({ error: 'Отдел не найден' });
+  await db.q(`DELETE FROM depts WHERE id=$1`, [d.id]);   // люди остаются в компании «без отдела»
+  res.json({ ok: true });
+}));
+// добавить человека в отдел: работнику руководителем становится руководитель отдела
+app.post('/api/depts/:id/members', auth(), wrap(async (req, res) => {
+  if (!adminOnly(req, res)) return;
+  const d = await myDept(req); if (!d) return res.status(404).json({ error: 'Отдел не найден' });
+  const m = await db.one(`SELECT * FROM members WHERE id=$1 AND company_id=$2 AND active`, [Number(req.body.memberId), req.me.company_id]);
+  if (!m) return res.status(404).json({ error: 'Сотрудник не найден' });
+  const head = await deptHead(d.id);
+  const boss = m.role === 'worker' && head && head.id !== m.id ? head.id : m.boss_id;
+  await db.q(`UPDATE members SET dept_id=$1, boss_id=$2 WHERE id=$3`, [d.id, boss, m.id]);
+  res.json({ ok: true });
+}));
+// назначить руководителя отдела: роль «Руководитель отдела», подчиняется директору; работники отдела — ему
+app.post('/api/depts/:id/head', auth(), wrap(async (req, res) => {
+  if (!adminOnly(req, res)) return;
+  const d = await myDept(req); if (!d) return res.status(404).json({ error: 'Отдел не найден' });
+  const m = await db.one(`SELECT * FROM members WHERE id=$1 AND company_id=$2 AND active`, [Number(req.body.memberId), req.me.company_id]);
+  if (!m) return res.status(404).json({ error: 'Сотрудник не найден' });
+  if (L.isAdmin(m)) return res.status(400).json({ error: 'Учредитель и директор уже руководят всей компанией' });
+  const top = await topBoss(req.me.company_id);
+  await db.tx(async c => {
+    await c.query(`UPDATE members SET role='worker', boss_id=$2 WHERE dept_id=$1 AND role='manager' AND id<>$3`, [d.id, m.id, m.id]);   // прежний руководитель — в работники отдела
+    await c.query(`UPDATE members SET role='manager', dept_id=$1, boss_id=$2 WHERE id=$3`, [d.id, top && top.id !== m.id ? top.id : null, m.id]);
+    await c.query(`UPDATE members SET boss_id=$2 WHERE dept_id=$1 AND role='worker' AND id<>$2`, [d.id, m.id]);
+  });
+  res.json({ ok: true });
+}));
 /* ---------- кошелёк (личный, видит только сам человек) ---------- */
 const W = require('./wallet');
 const isMonth = m => /^\d{4}-\d{2}$/.test(String(m || ''));
