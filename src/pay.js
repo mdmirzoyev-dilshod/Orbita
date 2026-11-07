@@ -185,6 +185,7 @@ function routes(app, { auth, wrap }) {
     const months = kind === 'pack' ? 1 : [1, 3, 6, 12].includes(Number(req.body.months)) ? Number(req.body.months) : 1;
     if (!kind) return res.status(400).json({ error: 'Неизвестный тип оплаты' });
     let amount, companyId = null, userId = req.s.user.id;
+    if (!(await B.canPay(req.s.user.id))) return res.status(403).json({ error: 'Оплату проводит руководство компании' });
     if (kind === 'company') {
       const me = req.s.member;
       if (!me || !L.isAdmin(me)) return res.status(403).json({ error: 'Оплачивает руководство компании' });
@@ -201,7 +202,7 @@ function routes(app, { auth, wrap }) {
   app.get('/api/pay/invoice/:id', auth(false), wrap(async (req, res) => {
     await migrate();
     const inv = await db.one(`SELECT * FROM invoices WHERE id=$1`, [Number(req.params.id)]);
-    const mine = inv && (inv.user_id === req.s.user.id || (inv.company_id && req.s.member && req.s.member.company_id === inv.company_id));
+    const mine = inv && (inv.user_id === req.s.user.id || (inv.company_id && req.s.member && req.s.member.company_id === inv.company_id && L.isAdmin(req.s.member)));
     if (!mine) return res.status(404).json({ error: 'Счёт не найден' });
     res.json(view(inv));
   }));

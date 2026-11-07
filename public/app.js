@@ -645,8 +645,9 @@ function aiCard(){
   return `<div class="card"><div class="card-h"><div><h3>🤖 ИИ-помощник</h3><p>${a.on ? SRC[a.src] : 'Не активен'} · ${sub}</p></div>${a.on?'<span class="chip s-done">Включён</span>':'<span class="chip s-new">Выключен</span>'}</div>
     ${a.on ? `<div class="aiu"><div><span>Голосовые</span><span class="num">${String(a.usedMin).replace('.',',')} из ${a.limitMin} мин</span></div><div class="bar"><i style="width:${pm}%;background:${pm>90?'var(--bad)':'var(--blue)'}"></i></div>
       <div><span>Сообщения ИИ</span><span class="num">${a.usedMsgs} из ${a.limitMsgs}</span></div><div class="bar"><i style="width:${pq}%;background:${pq>90?'var(--bad)':'var(--blue)'}"></i></div></div>
-      <p class="note" style="margin-top:8px">Лимит обновляется 1-го числа.${a.src==='trial'?` После пробного месяца — ${money(a.price.solo)} в месяц.`:''}</p>
-      <div class="paybar">${a.src==='trial'||a.src==='solo'?`<button class="btn sm primary" data-pay="ai">${a.src==='solo'?'Продлить':'Оплатить'} ИИ — ${money(a.price.solo)}</button>`:''}<button class="btn sm" data-pay="pack">+${a.price.packMin} мин — ${money(a.price.pack)}</button></div>`
+      <p class="note" style="margin-top:8px">Лимит обновляется 1-го числа.${a.canPay&&a.src==='trial'?` После пробного месяца — ${money(a.price.solo)} в месяц.`:''}</p>
+      ${!a.canPay?'':`<div class="paybar">${a.src==='trial'||a.src==='solo'?`<button class="btn sm primary" data-pay="ai">${a.src==='solo'?'Продлить':'Оплатить'} ИИ — ${money(a.price.solo)}</button>`:''}<button class="btn sm" data-pay="pack">+${a.price.packMin} мин — ${money(a.price.pack)}</button></div>`}`
+    : !a.canPay ? `<p style="margin:0 0 6px">Голосом: «Мадине до завтра подготовить отчёт», «потратил 50 тысяч на такси».</p><p class="note">ИИ-помощник входит в тариф компании и включится, когда руководство его продлит. Обратитесь к руководителю.</p>`
     : `<p style="margin:0 0 6px">Голосом: «Мадине до завтра подготовить отчёт», «потратил 50 тысяч на такси».</p><p class="note">${a.trialStarted?'Пробный месяц закончился. ':''}ИИ-помощник — <b>${money(a.price.solo)}</b> в месяц (60 мин голоса, 500 сообщений). В команде ИИ входит в тариф компании.</p><div class="paybar"><button class="btn sm primary" data-pay="ai">Оплатить по QR — ${money(a.price.solo)}</button></div>`}
   </div>`;
 }

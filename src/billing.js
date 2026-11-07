@@ -41,6 +41,12 @@ async function companyInfo(companyId) {
 async function memberships(userId) {
   return db.all(`SELECT * FROM members WHERE user_id=$1 AND active`, [userId]);
 }
+// оплату видит и проводит только руководство (учредитель, владелец, директор) или человек без компании.
+// Сотрудникам и руководителям отделов цены и кнопки оплаты не показываем.
+async function canPay(userId) {
+  const ms = await memberships(userId);
+  return !ms.length || ms.some(m => ADMIN_ROLES.includes(m.role));
+}
 
 // доступ к «Моим планам» / «Кошельку»: руководителям и одиночкам — всегда, работнику — если подключено (или пробный период компании)
 // «Мои планы» и «Кошелёк» теперь входят в базовый тариф и доступны всем (без ИИ они почти ничего не стоят)
@@ -80,6 +86,7 @@ async function aiAccess(userId) {
     limitMin, limitMsgs: best ? best.msgs : 0, usedMin: Math.round((us.voice_sec || 0) / 6) / 10, usedMsgs: us.msgs || 0, extraMin: us.extra_min || 0,
     trialStarted: Boolean(u.ai_trial_start), trialEnds, paidUntil: u.ai_paid_until || null,
     price: { solo: uzs(PRICE.solo), pack: uzs(PRICE.pack), packMin: PACK_MIN },
+    canPay: await canPay(userId),
   };
 }
 
@@ -87,6 +94,11 @@ const payHint = () => process.env.PAY_CONTACT ? `\nОплата: ${process.env.P
 // проверка перед обращением к ИИ: null — можно, иначе текст отказа
 async function aiGate(userId, { voiceSec = 0 } = {}) {
   const a = await aiAccess(userId);
+  if (!a.canPay) {   // сотрудник: без цен и оплаты — к руководителю
+    if (!a.on) return '🤖 ИИ-помощник сейчас недоступен. Он включится, когда руководство продлит тариф компании — обратитесь к руководителю.\n\nБез ИИ продолжают работать: расход «45000 такси», /tasks, /plan, /wallet и сайт.';
+    if (a.usedMsgs >= a.limitMsgs) return `🤖 Лимит ИИ на этот месяц исчерпан (${a.limitMsgs} сообщений). Он обновится 1-го числа.`;
+    if (voiceSec && (a.usedMin * 60 + voiceSec) > a.limitMin * 60) return `🎙 Лимит голосовых на этот месяц исчерпан (${a.limitMin} мин). Он обновится 1-го числа — пока можно писать текстом.`;
+  }
   if (!a.on) {
     return a.trialStarted
       ? `🤖 Пробный месяц ИИ-помощника закончился.\n\nГолосовые и свободный текст — ${a.price.solo.toLocaleString('ru-RU')} сум в месяц (60 минут голоса и 500 сообщений). Если вы работаете в команде, ИИ включится, когда компания оплатит тариф.${payHint()}\n\nБез ИИ продолжают работать: расход «45000 такси», /tasks, /plan, /wallet и сайт.`
@@ -119,6 +131,7 @@ async function trialReminders(tg) {
     await db.q(`UPDATE users SET ai_trial_notified=true WHERE id=$1`, [u.id]);
     const a = await aiAccess(u.id);
     if (a.src && a.src !== 'trial') continue;   // ИИ и так оплачен (сам или через компанию)
+    if (!a.canPay) continue;                     // сотрудникам цены не шлём — оплачивает руководство
     await tg.send(u.tg_id, `⏳ Через 3 дня (${addDays(u.ai_trial_start, TRIAL_DAYS)}) заканчивается пробный месяц ИИ-помощника.\n\nЧтобы и дальше ставить задачи и записывать расходы голосом — ${a.price.solo.toLocaleString('ru-RU')} сум в месяц.${payHint()}\n\nВсё остальное в «Орбите» остаётся бесплатным.`, { path: '/#alerts' });
   }
 }
@@ -150,4 +163,4 @@ async function applyPayment({ kind, companyId, userId, months = 1, amount = 0, b
   return { until };
 }
 
-module.exports = { TIER, extendDate, applyPayment, UNIT_UZS, PRICE, LIMITS, TRIAL_DAYS, PACK_MIN, uzs, companyInfo, hasFeature, aiAccess, aiGate, addUsage, isPlatformAdmin, trialReminders };
+module.exports = { canPay, TIER, extendDate, applyPayment, UNIT_UZS, PRICE, LIMITS, TRIAL_DAYS, PACK_MIN, uzs, companyInfo, hasFeature, aiAccess, aiGate, addUsage, isPlatformAdmin, trialReminders };
