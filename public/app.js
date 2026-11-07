@@ -151,11 +151,27 @@ async function checkLogin(){
   try { const r = await api('GET','/api/auth/poll?nonce='+encodeURIComponent(LOGIN.nonce)); if(r.ok){ clearInterval(pollTimer); boot(); } }
   catch(e){ clearInterval(pollTimer); toast(e.message); screenLogin(); }
 }
+// поля «Фамилия» и «Имя»: если имени нет — подставляем то, что есть (ник из Telegram — как имя)
+const nameFields = (pref, first, last) => `<div class="frow"><div class="field"><label for="${pref}-last">Фамилия</label><input id="${pref}-last" value="${esc(last||'')}" placeholder="Например: Каримов" autocomplete="family-name" maxlength="30" required></div>
+  <div class="field"><label for="${pref}-first">Имя</label><input id="${pref}-first" value="${esc(first||'')}" placeholder="Например: Азиз" autocomplete="given-name" maxlength="30" required></div></div>`;
+const realPart = v => /^[A-Za-zА-Яа-яЁёЎўҚқҒғҲҳʻʼ'’-]{2,30}( [A-Za-zА-Яа-яЁёЎўҚқҒғҲҳʻʼ'’-]{2,30})?$/.test(String(v||'').trim()) ? v : '';
+const splitName = u => u && (u.first || u.first_name) ? [u.first || u.first_name, u.last || u.last_name] : [String((u&&u.name)||'').split(' ')[0] || '', String((u&&u.name)||'').split(' ').slice(1).join(' ')];
+function nameGate(){
+  if(!ME || !ME.user || ME.user.name_ok || ME.viewingAs || $('namegate')) return;
+  const [f,l] = splitName(ME.user).map(realPart);
+  const g = document.createElement('div'); g.id = 'namegate'; g.className = 'ov';
+  g.innerHTML = `<form class="modal" id="namegate-form" role="dialog" aria-modal="true" aria-label="Фамилия и имя"><h2>Как вас зовут?</h2>
+    <p class="note" style="margin:-4px 0 14px">Сейчас вы в «Орбите» как <b>${esc(ME.user.name)}</b> — это ник из Telegram. Укажите настоящие фамилию и имя: так вас увидят руководитель и коллеги в задачах и структуре компании.</p>
+    ${nameFields('ng', f, l)}<div class="mact"><button class="btn primary" type="submit">Сохранить</button></div></form>`;
+  document.body.appendChild(g); setTimeout(()=>$('ng-last')&&$('ng-last').focus(), 50);
+}
 async function screenJoin(code){
   let inv; try { inv = await api('GET','/api/invite/'+code); } catch(e){ inv = {error:e.message}; }
   $('root').innerHTML = authShell(`${brand()}${inv.error?`<div class="err">${esc(inv.error)}</div><a class="btn" href="/">Открыть Орбиту</a>`:
     `<h1>Приглашение в «${esc(inv.company)}»</h1><p>${esc(inv.inviter||'Руководитель')} приглашает вас в команду${inv.dept?` · отдел «${esc(inv.dept)}»`:''}${inv.title?` · ${esc(inv.title)}`:''}.</p>
-     <p>Вы вошли как <b>${esc(ME.user.name)}</b>.</p><button class="btn primary" data-act="accept" data-code="${esc(code)}" style="align-self:flex-start;padding:12px 18px">Присоединиться к команде</button>`}`);
+     <form id="join-form" data-code="${esc(code)}" style="display:flex;flex-direction:column;gap:4px;margin-top:4px"><p style="margin:0 0 8px">Укажите фамилию и имя — так вас увидят в команде.</p>
+     ${(([f,l])=>nameFields('j', ME.user.name_ok?f:(ME.user.first_name||realPart(splitName(ME.user)[0])), ME.user.name_ok?l:(ME.user.last_name||'')))(splitName(ME.user))}
+     <button class="btn primary" type="submit" style="align-self:flex-start;padding:12px 18px">Присоединиться к команде</button></form>`}`);
   startConstellation(true);
 }
 function screenOnboard(another){
@@ -626,7 +642,7 @@ function vTeam(){
 /* ---------- структура компании ---------- */
 function teamView(){ try { return localStorage.getItem('orb_tv') || 'org'; } catch(e){ return 'org'; } }
 function orgNode(u, cls=''){
-  const sub = u.title || roleName(u);
+  const sub = (isOwner() && !u.nameOk && !u.demo ? '⚠ без фамилии · ' : '') + (u.title || roleName(u));
   return `<${isOwner()?`button type="button" data-act="editm" data-id="${u.id}" title="Изменить"`:'div'} class="onode ${cls}">${av(u,32)}<span><b>${esc(u.name)}</b><small>${esc(sub)}</small></span></${isOwner()?'button':'div'}>`;
 }
 function vOrg(){
@@ -1028,6 +1044,7 @@ function openEditMember(id){
   const u = U(id);
   modal(`<form class="modal" id="edit-member" data-id="${id}" role="dialog" aria-label="Сотрудник">
     <h2>${esc(u.name)}</h2>
+    ${!u.demo?nameFields('e', ...splitName(u)):''}${!u.nameOk&&!u.demo?'<p class="note" style="margin:-6px 0 10px;color:var(--warn,#C98A00)">⚠ Сотрудник вошёл под ником Telegram — укажите его фамилию и имя.</p>':''}
     <div class="frow"><div class="field"><label for="e-title">Должность</label><input id="e-title" value="${esc(u.title)}"></div>
     <div class="field"><label for="e-dept">Отдел</label><select id="e-dept">${deptOptions(u.deptId)}</select></div></div>
     <div class="field" id="e-newdept-f" hidden><label for="e-newdept">Название нового отдела</label><input id="e-newdept"></div>
@@ -1038,7 +1055,7 @@ function openEditMember(id){
 }
 function openProfile(){
   modal(`<form class="modal" id="profile-form" role="dialog" aria-label="Профиль"><h2>Ваш профиль</h2>
-    <div class="field"><label for="p-name">Имя и фамилия</label><input id="p-name" value="${esc(me().name)}" required></div>
+    ${nameFields('p', ...splitName(ME.user))}
     ${isOwner()?`<div class="field"><label for="p-co">Название компании</label><input id="p-co" value="${esc(S.company.name)}" required></div>
     <div class="field"><label>Логотип компании</label><div class="logorow"><span class="ws">${coLogo().replace('id="logo-input"','id="logo-input2"').replace('for="logo-input"','for="logo-input2"')}</span><label class="btn sm" for="logo-input2">${S.company.logo!=null?'Сменить':'Загрузить'}</label>${S.company.logo!=null?'<button type="button" class="btn sm" data-act="logo-del" style="color:var(--bad)">Убрать</button>':''}<span class="note">PNG, JPG, WEBP · до 2 МБ · лучше квадратный</span></div></div>`:''}
     <div class="mact"><button type="button" class="btn" data-close="1">Отмена</button><button class="btn primary" type="submit">Сохранить</button></div></form>`);
@@ -1065,7 +1082,7 @@ async function boot(){
   if(join) return screenJoin(join);
   if(!ME.member) return screenOnboard();
   await reload();
-  shell(); render(); startLive();
+  shell(); render(); startLive(); nameGate();
 }
 
 /* ---------- события ---------- */
@@ -1201,9 +1218,12 @@ document.addEventListener('submit', async e => {
     if(f.id==='edit-member'){
       const dept = $('e-dept').value, body = {title:$('e-title').value, deptId: dept==='new'?null:Number(dept), newDept: dept==='new'?$('e-newdept').value:'', bossId: ($('e-role')&&$('e-role').value==='founder') || !$('e-boss').value ? null : Number($('e-boss').value)};
       if($('e-role')) body.role = $('e-role').value;
+      if($('e-first')){ body.firstName = $('e-first').value; body.lastName = $('e-last').value; }
       await api('PATCH','/api/members/'+f.dataset.id, body); closeModal(); await reload(); render(); return toast('Сохранено');
     }
-    if(f.id==='profile-form'){ await api('PATCH','/api/profile',{name:$('p-name').value}); if($('p-co')) await api('PATCH','/api/company',{name:$('p-co').value}); closeModal(); ME = await api('GET','/api/me'); await reload(); shell(); render(); return toast('Сохранено'); }
+    if(f.id==='namegate-form'){ const r = await api('POST','/api/profile/name',{firstName:$('ng-first').value, lastName:$('ng-last').value}); $('namegate').remove(); ME = await api('GET','/api/me'); await reload(); shell(); render(); return toast('Спасибо, '+r.name+'!'); }
+    if(f.id==='join-form'){ await api('POST','/api/invite/'+f.dataset.code+'/accept',{firstName:$('j-first').value, lastName:$('j-last').value}); history.replaceState(null,'','/'); toast('Добро пожаловать в команду!'); return boot(); }
+    if(f.id==='profile-form'){ await api('POST','/api/profile/name',{firstName:$('p-first').value, lastName:$('p-last').value}); if($('p-co')) await api('PATCH','/api/company',{name:$('p-co').value}); closeModal(); ME = await api('GET','/api/me'); await reload(); shell(); render(); return toast('Сохранено'); }
     if(f.id==='newco'){ await api('POST','/api/company',{name:$('co-name').value, title:$('co-title').value, myName:$('co-me').value}); return boot(); }
     if(f.id==='devlogin'){ await api('POST','/api/auth/dev',{name:$('devname').value}); return boot(); }
   } catch(err){ toast(err.message); }

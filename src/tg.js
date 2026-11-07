@@ -168,6 +168,26 @@ async function onMessage(m) {
     return call('sendMessage', { chat_id: chat, text: head + `\n\nСюда будут приходить задачи, напоминания и итоги дня.\nКоманды: /tasks — мои задачи, /plan — план на сегодня, /wallet — кошелёк, /login — войти на сайт\n\n👛 Расход: «45000 такси», доход: «+5 000 000 зарплата»\n🎙 Можно голосом: «Мадине до завтра 15:00 подготовить отчёт», «потратил 120 тысяч на продукты»\n↩️ Ответ на сообщение о задаче станет комментарием, фото — фото-отчётом`, reply_markup: rows.length ? { inline_keyboard: rows } : undefined });
   }
 
+  // фамилия и имя обязательны: кто в команде под ником Telegram — сначала представляется
+  if (!user.name_ok && !user.demo) {
+    const inTeam = await db.one(`SELECT 1 FROM members WHERE user_id=$1 AND active LIMIT 1`, [user.id]);
+    if (inTeam) {
+      if (user.name_ask_at && text && !text.startsWith('/')) {
+        const n = require('./names').fromText(text);
+        if (n.error) return send(chat, '✍️ ' + n.error, { open: false });
+        await db.q(`UPDATE users SET name=$1, first_name=$2, last_name=$3, name_ok=true WHERE id=$4`, [n.name, n.first, n.last, user.id]);
+        return send(chat, `✅ Спасибо, ${n.name}! Теперь коллеги видят вас по фамилии и имени.
+
+Команды: /tasks — мои задачи, /plan — план на сегодня.`);
+      }
+      await db.q(`UPDATE users SET name_ask_at=now() WHERE id=$1`, [user.id]);
+      return send(chat, `👤 ${user.name}, прежде чем продолжить, укажите, пожалуйста, фамилию и имя — так вас увидят руководитель и коллеги.
+
+Напишите одним сообщением: Фамилия Имя
+Например: Каримов Азиз`, { open: false });
+    }
+  }
+
   // Кошелёк: «45000 такси» — записать расход, «+5 000 000 зарплата» — доход
   const W = require('./wallet');
   const canWallet = !handlers.feature || await handlers.feature(user, 'wallet');

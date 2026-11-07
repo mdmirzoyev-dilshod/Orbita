@@ -10,7 +10,7 @@ const isAdmin = m => Boolean(m) && ADMIN.includes(m.role);
 const PRIO = { high: 'высокий', medium: 'средний', low: 'низкий' };
 
 async function companyMembers(companyId) {
-  return db.all(`SELECT m.*, u.name, u.tg_id, u.username, u.demo, d.name AS dept, d.color AS dept_color
+  return db.all(`SELECT m.*, u.name, u.tg_id, u.username, u.demo, u.first_name, u.last_name, u.name_ok, d.name AS dept, d.color AS dept_color
                  FROM members m JOIN users u ON u.id=m.user_id LEFT JOIN depts d ON d.id=m.dept_id
                  WHERE m.company_id=$1 AND m.active ORDER BY (m.role IN ('owner','founder')) DESC, (m.role='director') DESC, (m.role='manager') DESC, d.name NULLS LAST, u.name`, [companyId]);
 }

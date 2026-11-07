@@ -42,14 +42,14 @@ const wrap = fn => (req, res) => fn(req, res).catch(e => { console.error(e); res
 async function loadSession(req) {
   const token = req.cookies[COOKIE];
   if (!token) return null;
-  const s = await db.one(`SELECT s.*, u.name, u.tg_id, u.username, u.demo FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token=$1`, [token]);
+  const s = await db.one(`SELECT s.*, u.name, u.tg_id, u.username, u.demo, u.name_ok, u.first_name, u.last_name FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token=$1`, [token]);
   if (!s) return null;
   let member = s.member_id ? await db.one(`SELECT * FROM members WHERE id=$1 AND user_id=$2 AND active`, [s.member_id, s.user_id]) : null;
   if (!member) {
     member = await db.one(`SELECT * FROM members WHERE user_id=$1 AND active ORDER BY created_at LIMIT 1`, [s.user_id]);
     if (member) await db.q(`UPDATE sessions SET member_id=$1 WHERE token=$2`, [member.id, token]);
   }
-  return { token, back: s.back_token, user: { id: s.user_id, name: s.name, tg_id: s.tg_id, username: s.username, demo: s.demo }, member };
+  return { token, back: s.back_token, user: { id: s.user_id, name: s.name, tg_id: s.tg_id, username: s.username, demo: s.demo, name_ok: s.name_ok || s.demo, first_name: s.first_name, last_name: s.last_name }, member };
 }
 const auth = (needMember = true) => async (req, res, next) => {
   try {
@@ -69,6 +69,14 @@ async function startSession(res, userId, req) {
 /* ---------- вход ---------- */
 // OPEN_SIGNUP=1 — открыть создание компаний всем (только для локальных тестов); по умолчанию — только администратор платформы
 const canCreateCompany = async user => process.env.OPEN_SIGNUP === '1' || Boolean(await B.isPlatformAdmin(user));
+const NAMES = require('./names');
+// указать фамилию и имя (обязательно для всех, кто вошёл под ником Telegram)
+app.post('/api/profile/name', auth(false), wrap(async (req, res) => {
+  const n = NAMES.fullName(req.body.firstName, req.body.lastName);
+  if (n.error) return res.status(400).json({ error: n.error });
+  await db.q(`UPDATE users SET name=$1, first_name=$2, last_name=$3, name_ok=true WHERE id=$4`, [n.name, n.first, n.last, req.s.user.id]);
+  res.json({ ok: true, name: n.name });
+}));
 app.get('/api/me', wrap(async (req, res) => {
   const s = await loadSession(req);
   const base = { bot: tg.botUsername(), botReady: tg.enabled(), devLogin: process.env.DEV_LOGIN === '1' };
@@ -104,6 +112,7 @@ app.post('/api/auth/dev', wrap(async (req, res) => {
   if (process.env.DEV_LOGIN !== '1') return res.status(404).end();
   const tgId = -Math.floor(Math.random() * 1e9);   // всегда новый тестовый пользователь — войти в чужой аккаунт нельзя
   const u = await tg.upsertUser({ id: tgId, first_name: clean(req.body.name, 60) || 'Тест' });
+  await db.q(`UPDATE users SET name_ok=true WHERE id=$1`, [u.id]);
   await startSession(res, u.id, req);
   res.json({ ok: true });
 }));
@@ -169,6 +178,13 @@ app.get('/api/invite/:code', wrap(async (req, res) => {
 }));
 app.post('/api/invite/:code/accept', auth(false), wrap(async (req, res) => {
   const code = clean(req.params.code, 30);
+  // фамилия и имя обязательны (если ещё не указаны) — чтобы в команде не было людей под никами
+  if (!req.s.user.name_ok || req.body.firstName || req.body.lastName) {
+    const n = NAMES.fullName(req.body.firstName, req.body.lastName);
+    if (n.error) return res.status(400).json({ error: n.error, needName: true });
+    await db.q(`UPDATE users SET name=$1, first_name=$2, last_name=$3, name_ok=true WHERE id=$4`, [n.name, n.first, n.last, req.s.user.id]);
+    req.s.user.name = n.name;
+  }
   const r = await db.tx(async c => {
     const i = (await c.query(`SELECT * FROM invites WHERE code=$1 FOR UPDATE`, [code])).rows[0];
     if (!i || i.used_by || new Date(i.expires_at) < new Date()) return { error: 'Приглашение не найдено или уже использовано' };
@@ -222,7 +238,7 @@ app.get('/api/state', auth(), wrap(async (req, res) => {
     isAdmin: L.isAdmin(me),
     scope,
     depts: depts.map(d => ({ id: d.id, name: d.name, color: d.color })),
-    users: members.map(m => ({ id: m.id, name: m.name, demo: Boolean(m.demo), role: m.role === 'worker' ? 'worker' : 'manager', level: m.role, pos: m.role === 'owner' ? (m.pos === 'director' ? 'director' : 'founder') : null, owner: m.role === 'owner', admin: L.ADMIN.includes(m.role), dept: m.dept || 'Без отдела', deptId: m.dept_id, deptColor: m.dept_color || '#9AA3C7', plansOn: m.plans_on, walletOn: m.wallet_on, title: m.title || '', boss: m.boss_id, tg: Boolean(m.tg_id) && (m.settings || {}).tg !== false, username: m.username })),
+    users: members.map(m => ({ id: m.id, name: m.name, first: m.first_name || '', last: m.last_name || '', nameOk: Boolean(m.name_ok || m.demo), demo: Boolean(m.demo), role: m.role === 'worker' ? 'worker' : 'manager', level: m.role, pos: m.role === 'owner' ? (m.pos === 'director' ? 'director' : 'founder') : null, owner: m.role === 'owner', admin: L.ADMIN.includes(m.role), dept: m.dept || 'Без отдела', deptId: m.dept_id, deptColor: m.dept_color || '#9AA3C7', plansOn: m.plans_on, walletOn: m.wallet_on, title: m.title || '', boss: m.boss_id, tg: Boolean(m.tg_id) && (m.settings || {}).tg !== false, username: m.username })),
     tasks: tasks.map(t => ({ id: t.id, title: t.title, desc: t.descr, assignee: t.assignee_id, author: t.author_id, priority: t.priority, status: t.status, created: t.created_on, due: t.due, dueTime: t.due_time, ext: t.extended, remind: t.remind_at, doneAt: t.done_on,
       comments: comments.filter(c => c.task_id === t.id).map(c => ({ id: c.id, u: c.member_id, t: c.text, at: c.at, f: Boolean(c.file_id), a: c.attach_id && attMap[c.attach_id] ? { id: c.attach_id, name: attMap[c.attach_id].name, mime: attMap[c.attach_id].mime, size: attMap[c.attach_id].size } : null })),
       seenAt: t.seen_at, snoozeUntil: t.snooze_until, remindOff: t.remind_off, photo: t.requires_photo, checklist: Array.isArray(t.checklist) ? t.checklist : [], series: t.series_id ? { id: t.series_id, repeat: (seriesMap[t.series_id] || {}).repeat, active: (seriesMap[t.series_id] || {}).active } : null })),
@@ -545,6 +561,12 @@ app.patch('/api/members/:id', auth(), wrap(async (req, res) => {
   const m = await db.one(`SELECT * FROM members WHERE id=$1 AND company_id=$2`, [Number(req.params.id), req.me.company_id]);
   if (!m) return res.status(404).json({ error: 'Сотрудник не найден' });
   const b = req.body;
+  // руководство исправляет фамилию и имя сотрудника
+  if (b.firstName !== undefined || b.lastName !== undefined) {
+    const n = NAMES.fullName(b.firstName, b.lastName);
+    if (n.error) return res.status(400).json({ error: n.error });
+    await db.q(`UPDATE users SET name=$1, first_name=$2, last_name=$3, name_ok=true WHERE id=$4`, [n.name, n.first, n.last, m.user_id]);
+  }
   // владелец остаётся владельцем, но выбирает, кем стоит в структуре: учредителем или директором; себя понизить нельзя
   const role = m.role === 'owner' || m.id === req.me.id ? m.role : (['founder', 'director', 'manager', 'worker'].includes(b.role) ? b.role : m.role);
   const pos = m.role === 'owner' && ['founder', 'director'].includes(b.role) ? b.role : m.pos;
