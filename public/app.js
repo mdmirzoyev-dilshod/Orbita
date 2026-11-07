@@ -268,7 +268,7 @@ function vOverview(){
       <td class="n num">${a}</td><td class="n num" style="color:${od?'var(--bad)':'inherit'};font-weight:${od?700:500}">${od}</td>
       <td>${p==null?'<span class="note">нет плана</span>':`<div style="display:flex;align-items:center;gap:8px"><div class="bar" style="flex:1"><i style="width:${p}%"></i></div><span class="num" style="font-size:12px;font-weight:600">${p}%</span></div>`}</td></tr>`; }).join('');
   const attention = [...over, ...act.filter(t=>t.due===TODAY && !late(t))];
-  const counts = depts.map(dp=>[dp, scope().filter(u=>u.dept===dp).length]);
+  const counts = groups(scope()).map(g=>[g, scope().filter(u=>grp(u)===g).length]);
   const alone = scope().length <= 1;
   const teamDisc = scope().filter(u=>u.id!==S.me).map(u=>discipline(u.id)).reduce((a,d)=>({onTime:a.onTime+d.onTime,lateDone:a.lateDone+d.lateDone,over:a.over+d.over,total:a.total+d.total}),{onTime:0,lateDone:0,over:0,total:0});
   teamDisc.pct = teamDisc.total ? Math.round(teamDisc.onTime/teamDisc.total*100) : null;
@@ -290,7 +290,7 @@ function vOverview(){
       <canvas id="cv" aria-hidden="true"></canvas>
       <div class="live-top"><div><span class="tag"><i></i>Живая карта команды</span><h3>Созвездие команды</h3><p>${scope().length} чел. · точки на орбите — открытые задачи, красные просрочены</p></div>
         <div class="seg"><button class="${VIEW==='orbit'?'on':''}" data-view="orbit">${ICON.orbit}Созвездие</button><button class="${VIEW==='org'?'on':''}" data-view="org">${ICON.org}Оргсхема</button></div></div>
-      <div class="chips"><button class="${CF==='all'?'on':''}" data-cf="all">Все <em>${scope().length}</em></button>${counts.map(([dp,c])=>`<button class="${CF===dp?'on':''}" data-cf="${esc(dp)}"><i style="background:${deptColor(dp)}"></i>${esc(dp)} <em>${c}</em></button>`).join('')}</div>
+      <div class="chips"><button class="${CF==='all'?'on':''}" data-cf="all">Все <em>${scope().length}</em></button>${counts.map(([dp,c])=>`<button class="${CF===dp?'on':''}" data-cf="${esc(dp)}"><i style="background:${grpColor(dp)}"></i>${esc(dp)} <em>${c}</em></button>`).join('')}</div>
       ${VIEW==='org'?orgChart():''}
       <div class="foot"><span>Наведите на точку, чтобы увидеть человека</span><span><b class="num">${act.length}</b> открытых задач · <b class="num" style="color:#FF9A92">${over.length}</b> просрочено</span></div>
     </section>
@@ -357,15 +357,21 @@ function disciplineCard(){
       : '<div class="empty">Появится, когда у сотрудников будут задачи со сроком</div>'}</div>`;
 }
 
+// группа человека в структуре: руководство компании, его отдел или «Без отдела»
+const LEAD = u => u.level==='owner'||u.level==='founder'||u.level==='director';
+const grp = u => LEAD(u) ? 'Руководство' : (u.deptId && S.depts.some(d=>d.id===u.deptId) ? u.dept : 'Без отдела');
+const grpColor = g => g==='Руководство' ? '#FFD23F' : g==='Без отдела' ? '#9AA3C7' : ((S.depts.find(d=>d.name===g)||{}).color || deptColor(g));
+function groups(list){ const order = [...new Set(['Руководство', ...S.depts.map(d=>d.name), 'Без отдела'])]; return order.filter(g=>list.some(u=>grp(u)===g)); }
 function orgChart(){
   const sc = scope();
-  const top = sc.filter(u=>!sc.some(x=>x.id===u.boss));
-  const lvl = arr => arr.map(u=>`<div class="nd"><b>${esc(u.name)}</b><small>${esc(u.title||u.dept)}</small></div>`).join('');
-  let html = `<div class="org"><div class="lvl">${lvl(top)}</div>`;
-  const mids = sc.filter(u=>top.some(t=>t.id===u.boss) && (CF==='all'||u.dept===CF));
-  if(mids.length) html += `<div class="lvl">${lvl(mids)}</div>`;
-  const low = sc.filter(u=>mids.some(m=>m.id===u.boss));
-  if(low.length) html += `<div class="lvl">${lvl(low)}</div>`;
+  const nd = u => `<div class="nd"><b>${esc(u.name)}</b><small>${esc(u.title||roleName(u))}</small></div>`;
+  const founders = sc.filter(u=>u.level==='owner'||u.level==='founder'), dirs = sc.filter(u=>u.level==='director');
+  const gs = groups(sc).filter(g=>g!=='Руководство' && (CF==='all'||CF===g));
+  let html = `<div class="org">`;
+  if(founders.length) html += `<div class="lvl">${founders.map(nd).join('')}</div>`;
+  if(dirs.length) html += `<div class="lvl">${dirs.map(nd).join('')}</div>`;
+  if(gs.length) html += `<div class="ocols">${gs.map(g=>{ const ppl = sc.filter(u=>grp(u)===g), heads = ppl.filter(u=>u.level==='manager'), ws = ppl.filter(u=>u.level==='worker');
+    return `<div class="ocol" style="--dc:${grpColor(g)}"><div class="oct"><i></i>${esc(g)}<em>${ppl.length}</em></div>${heads.map(u=>nd(u).replace('class="nd"','class="nd hd"')).join('')}${ws.map(nd).join('')}</div>`; }).join('')}</div>`;
   return html + '</div>';
 }
 
@@ -389,7 +395,7 @@ function startConstellation(demo){
     let id=2; D.slice(1).forEach(([d,c])=>{ const mid=id++; people.push({id:mid,name:'',dept:d,deptColor:c,role:'manager',boss:1}); for(let k=0;k<3;k++) people.push({id:id++,name:'',dept:d,deptColor:c,role:'worker',boss:mid}); });
     getTasks = u => Array.from({length:(u.id*7)%4}, (_,i)=>({late: (u.id+i)%5===0}));
   } else {
-    people = scope();
+    people = scope().map(u=>({...u, deptColor: grpColor(grp(u)), dept: grp(u)}));
     getTasks = u => S.tasks.filter(t=>t.assignee===u.id && t.status!=='done').map(t=>({late:late(t)}));
   }
   const depts = [...new Set(people.map(u=>u.dept))].filter(d=>people.some(u=>u.dept===d && people.some(x=>x.id===u.boss)));
@@ -401,7 +407,36 @@ function startConstellation(demo){
     const mates = people.filter(x=>x.dept===u.dept && x.role!=='manager' || x.id===u.id);
     return {u, isTop, di: Math.max(0,depts.indexOf(u.dept)), k: mates.findIndex(x=>x.id===u.id), n: Math.max(1,mates.length), tasks: getTasks(u), ph: R()*Math.PI*2};
   });
+  // реальная команда: учредитель в центре, директор рядом, отделы секторами: руководитель отдела ближе, работники — дальше
+  if(!demo){
+    const F0 = people.filter(u=>u.level==='owner'||u.level==='founder'), D0 = people.filter(u=>u.level==='director');
+    const centre = F0.length ? F0 : D0, ring = F0.length ? D0 : [];
+    const gs = [...new Set(people.filter(u=>!LEAD(u)).map(u=>u.dept))];
+    const G = Math.max(1, gs.length), sector = Math.PI*2/G;
+    nodes.forEach(nd=>{ const u = nd.u;
+      nd.isTop = centre.includes(u); nd.u = {...u, role: LEAD(u)||u.level==='manager' ? 'manager' : 'worker'};
+      if(nd.isTop){ nd.slot = {k:'c', i:centre.indexOf(u), n:centre.length}; return; }
+      if(ring.includes(u)){ nd.slot = {k:'d', i:ring.indexOf(u), n:ring.length}; return; }
+      const gi = gs.indexOf(u.dept), mates = people.filter(x=>x.dept===u.dept && x.level==='worker');
+      nd.slot = u.level==='manager' ? {k:'h', base: -Math.PI/2 + (gi+.5)*sector, j: people.filter(x=>x.dept===u.dept&&x.level==='manager').indexOf(u)}
+        : {k:'w', base: -Math.PI/2 + (gi+.5)*sector, i: mates.indexOf(u), n: mates.length};
+    });
+    var place = (nd, t) => {
+      const s = nd.slot, rx = Math.min(W*.44, 440), ry = Math.max(40,(BOTY()-TOPY())/2 - 16), wob = reduce ? 0 : Math.sin(t*.00025 + nd.ph)*.025;
+      const clamp = ([x,y]) => [Math.max(26, Math.min(W-26, x)), Math.max(TOPY()+10, Math.min(BOTY()-14, y))];
+      if(s.k==='c') return [cx() + (s.i-(s.n-1)/2)*Math.min(120, rx*.32), cy() + (ring.length ? Math.min(28, ry*.25) : 0)];
+      if(s.k==='d') return [cx() + (s.i-(s.n-1)/2)*Math.min(130, rx*.35) + wob*40, cy() - Math.max(46, ry*.55)];
+      // точка отдела: руководитель на средней орбите; работники — веером наружу от него
+      const ang = s.base, ux = Math.cos(ang), uy = Math.sin(ang), hx = cx() + ux*rx*.5, hy = cy() + uy*ry*.55;
+      if(s.k==='h') return clamp([hx + s.j*34, hy + s.j*22 + wob*20]);
+      const dist = Math.min(rx*.42, 150), gap = Math.max(34, Math.min(52, (ry*2-20)/Math.max(1,s.n))), off = (s.i-(s.n-1)/2)*gap;
+      // перпендикуляр к направлению отдела; для боковых отделов это вертикаль
+      const px = -uy, py = ux, sx = Math.abs(ux) > .6 ? 0 : px, sy = Math.abs(ux) > .6 ? 1 : py;
+      return clamp([hx + ux*dist + sx*off + wob*30, hy + uy*dist*.6 + sy*off]);
+    };
+  }
   const pos = (nd, t) => {
+    if(!demo) return place(nd, t);
     if(nd.isTop && !(nd.u.boss)) { const tops = nodes.filter(n=>n.isTop); if(tops.length===1) return [cx(), cy()]; }
     const base = depts.length===1 ? 0 : (nd.di/Math.max(1,depts.length)) * Math.PI*2 - Math.PI/2;
     const f = nd.u.role==='manager' ? .62 : .97;
@@ -614,7 +649,7 @@ function vOrg(){
       ${isOwner()?`<div class="odfoot"><button class="btn sm primary" data-act="invite-dept" data-id="${d.id}">${ICON.plus}Пригласить в отдел</button>${pick('dmove','Перевести сюда…', others).replace('data-dmove="1"',`data-dmove="${d.id}"`)}</div>`:''}
     </div>`;
   };
-  return `<div class="org">
+  return `<div class="ostruct">
     ${level('Учредитель', lead, 'Не указан')}
     <div class="oline"></div>
     ${level('Директор', dirs, isOwner()?'Директора пока нет — пригласите его с ролью «Директор»':'Директора пока нет')}
