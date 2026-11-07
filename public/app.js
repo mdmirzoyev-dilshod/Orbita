@@ -516,7 +516,7 @@ function vTimeline(list){
   const dueCount = days.map(d=>list.filter(t=>t.status!=='done' && t.due===d).length);
   const mx = Math.max(...dueCount,0), peakI = mx ? dueCount.indexOf(mx) : -1;
   const cw = 100/N;
-  const pts = dueCount.map((v,i)=>[(i+.5)*cw, 46-(v/Math.max(mx,1))*36]);
+  const pts = dueCount.map((v,i)=>[(i+.5)*cw, 84-(v/Math.max(mx,1))*52]);   // высота графика 92: снизу линия, сверху место под подписи
   const capPath = pts.map((p,i)=>(i?'L':'M')+p[0].toFixed(2)+' '+p[1].toFixed(1)).join(' ');
   const people = S.users.filter(u=>list.some(t=>t.assignee===u.id));
   const dayHead = days.map(d=>{ const x=new Date(d+'T12:00:00'), we=x.getDay()===0||x.getDay()===6; return `<div class="d ${we?'we':''} ${d===TODAY?'today':''}">${WD[x.getDay()].slice(0,1)}<b class="num">${x.getDate()}</b></div>`; }).join('');
@@ -546,8 +546,8 @@ function vTimeline(list){
       <div class="lg"><span><i style="border-color:#6F8BF0;background:#EEF2FF"></i>В работе</span><span><i style="border-color:#C9CEE0"></i>Новая</span><span><i style="border-color:#F2B84B;background:#FFF5DC"></i>На проверке</span><span><i style="border-color:#F08A82;background:var(--bad-soft)"></i>Просрочено</span><span><i style="border-color:#9BD8C2;background:var(--ok-soft)"></i>Готово</span></div></div>
     <div class="tl"><div class="tl-in">
       <div class="tl-row"><div class="who" style="flex-direction:column;align-items:flex-start;gap:0"><span class="eyebrow" style="color:var(--muted)">Нагрузка по срокам</span><small style="color:var(--muted);font-size:11px">${mx?`пик: ${mx} · ${fmt(days[peakI])}`:'сроков нет'}</small></div>
-        <div class="cap"><svg viewBox="0 0 100 56" preserveAspectRatio="none" aria-hidden="true"><path d="${capPath}" fill="none" stroke="${CV('line')}" stroke-width="5" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round"/>${pts.map((p,i)=>i<N-1&&(dueCount[i]||dueCount[i+1])?`<path d="M${p[0]} ${p[1]} L${pts[i+1][0]} ${pts[i+1][1]}" stroke="${CV('blue')}" stroke-width="5" vector-effect="non-scaling-stroke" stroke-linecap="round"/>`:'').join('')}</svg>
-        ${mx>0?`<span style="position:absolute;left:calc(${(peakI+.5)*cw}% - 22px);top:-6px;background:var(--ink);color:#fff;font-size:10px;font-weight:700;border-radius:10px;padding:1px 7px">${mx} срок.</span>`:''}</div></div>
+        <div class="cap"><svg viewBox="0 0 100 92" preserveAspectRatio="none" aria-hidden="true"><path d="${capPath}" fill="none" stroke="${CV('line')}" stroke-width="5" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round"/>${pts.map((p,i)=>i<N-1&&(dueCount[i]||dueCount[i+1])?`<path d="M${p[0]} ${p[1]} L${pts[i+1][0]} ${pts[i+1][1]}" stroke="${CV('blue')}" stroke-width="5" vector-effect="non-scaling-stroke" stroke-linecap="round"/>`:'').join('')}</svg>
+        ${dueCount.map((v,i)=>v>0?`<span class="capn ${i===peakI?'pk':''}" style="left:${(i+.5)*cw}%;top:${pts[i][1]-(i===peakI?27:22)}px" title="${fmt(days[i])}: ${v} ${v===1?'срок':v<5?'срока':'сроков'}">${i===peakI?`${v} ${v===1?'срок':v<5?'срока':'сроков'}`:v}</span>`:'').join('')}</div></div>
       <div class="tl-row"><div class="who"><span class="eyebrow" style="color:var(--muted)">Сотрудник</span></div><div class="tl-days" style="--n:${N}">${dayHead}</div></div>
       ${lanes || '<div class="empty">Нет задач в этом периоде. Нажмите «Поставить задачу».</div>'}
     </div></div>
