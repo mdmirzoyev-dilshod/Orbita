@@ -249,7 +249,7 @@ function header(crumb, title, action){
 }
 
 /* ---------- Обзор ---------- */
-let CF = 'all', VIEW = 'orbit';
+let CF = 'all', VIEW = 'org';   // на обзоре — только структура компании
 function vOverview(){
   const ts = scopeTasks(), ids = scopeIds();
   const act = ts.filter(t=>t.status!=='done'), over = ts.filter(late);
@@ -286,13 +286,12 @@ function vOverview(){
   </div>
   <div class="grid low-grid" style="margin-top:16px">${disciplineCard()}${feedCard()}</div>
   <div class="grid ov-grid">
-    <section class="live" id="live" aria-label="Созвездие команды">
-      <canvas id="cv" aria-hidden="true"></canvas>
-      <div class="live-top"><div><span class="tag"><i></i>Живая карта команды</span><h3>Созвездие команды</h3><p>${scope().length} чел. · точки на орбите — открытые задачи, красные просрочены</p></div>
-        <div class="seg"><button class="${VIEW==='orbit'?'on':''}" data-view="orbit">${ICON.orbit}Созвездие</button><button class="${VIEW==='org'?'on':''}" data-view="org">${ICON.org}Оргсхема</button></div></div>
+    <section class="live" id="live" aria-label="Структура компании">
+      <div class="live-top"><div><span class="tag"><i></i>Команда</span><h3>Структура компании</h3><p>${scope().length} чел. · учредитель → директор → отделы</p></div>
+        ${isOwner()?`<a class="btn sm" href="#team" style="background:rgba(255,255,255,.1);color:#fff;border-color:rgba(255,255,255,.2);text-decoration:none">Изменить структуру</a>`:''}</div>
       <div class="chips"><button class="${CF==='all'?'on':''}" data-cf="all">Все <em>${scope().length}</em></button>${counts.map(([dp,c])=>`<button class="${CF===dp?'on':''}" data-cf="${esc(dp)}"><i style="background:${grpColor(dp)}"></i>${esc(dp)} <em>${c}</em></button>`).join('')}</div>
-      ${VIEW==='org'?orgChart():''}
-      <div class="foot"><span>Наведите на точку, чтобы увидеть человека</span><span><b class="num">${act.length}</b> открытых задач · <b class="num" style="color:#FF9A92">${over.length}</b> просрочено</span></div>
+      ${orgChart()}
+      <div class="foot"><span>${(n=>`${n} ${n%10===1&&n%100!==11?'отдел':[2,3,4].includes(n%10)&&![12,13,14].includes(n%100)?'отдела':'отделов'}`)(groups(scope()).filter(g=>g!=='Руководство'&&g!=='Без отдела').length)}</span><span><b class="num">${act.length}</b> открытых задач · <b class="num" style="color:#FF9A92">${over.length}</b> просрочено</span></div>
     </section>
     <div class="card"><div class="card-h"><div><h3>Пульс дисциплины</h3><p>Выполнение личных планов · 10 дней</p></div><div style="text-align:right"><div class="bigstat"><b class="num">${teamPlan==null?'—':teamPlan+'%'}</b></div>${teamPlan!=null&&prevPlan!=null?`<span class="pill ${teamPlan>=prevPlan?'ok':'bad'}">${teamPlan>=prevPlan?'↗':'↘'} ${Math.abs(teamPlan-prevPlan)} к вчера</span>`:''}</div></div>
       <div class="heat">${heat}</div>
