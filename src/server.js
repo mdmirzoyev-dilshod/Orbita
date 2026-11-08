@@ -30,6 +30,9 @@ app.use('/api', (req, res, next) => {
 });
 app.use(cookieParser());
 
+// вход для Джарвиса (личного ИИ-помощника владельца) — по ключу JARVIS_API_KEY
+app.use('/api/jarvis', require('./jarvis'));
+
 const COOKIE = 'orb_s';
 const DEPT_COLORS = ['#FFD23F', '#6F8BFF', '#FF8A4C', '#3FD3A8', '#C77DFF', '#FF6B9A', '#52C7EA', '#B4E05A'];
 const rid = (n = 24) => crypto.randomBytes(n).toString('base64url');

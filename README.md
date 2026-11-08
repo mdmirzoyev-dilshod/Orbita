@@ -50,6 +50,8 @@ DATABASE_URL=postgres://... npm run dev   # появится «Тестовый 
 | `BOT_TOKEN` | Токен Telegram-бота от @BotFather |
 | `APP_URL` | Адрес сайта. По умолчанию берётся `RAILWAY_PUBLIC_DOMAIN` |
 | `APP_TZ` | Часовой пояс сводок и сроков, по умолчанию `Asia/Tashkent` |
+| `JARVIS_API_KEY` | Ключ для Джарвиса — личного ИИ-помощника владельца (не короче 24 символов). Вход: `/api/jarvis/*` с заголовком `Authorization: Bearer <ключ>` |
+| `JARVIS_USER` | От чьего имени действует Джарвис: Telegram id или @username. По умолчанию — администратор платформы |
 | `DEV_LOGIN` | `1` включает тестовый вход без Telegram. На рабочем сервере не включать |
 
 ## Устройство
