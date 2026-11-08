@@ -51,7 +51,8 @@ async function context(me) {
   // задачи могут висеть на тех, кто уже не в команде — подписываем их, а не прочерком
   const gone = await db.all(`SELECT m.id, u.name, u.first_name, u.last_name FROM members m JOIN users u ON u.id=m.user_id WHERE m.company_id=$1 AND NOT m.active`, [me.company_id]);
   for (const m of gone) names.set(m.id, fullName(m) + ' (не в команде)');
-  const tasks = await db.all(`SELECT * FROM tasks WHERE company_id=$1 AND (assignee_id = ANY($2) OR author_id=$3)`, [me.company_id, scope, me.id]);
+  // только задачи действующих сотрудников (как на сайте): задачи удалённых из команды не считаем
+  const tasks = await db.all(`SELECT * FROM tasks WHERE company_id=$1 AND assignee_id = ANY($2)`, [me.company_id, scope]);
   members.forEach(m => { m.me = m.id === me.id; });
   return { members: members.filter(m => scope.includes(m.id)), names, tasks };
 }
