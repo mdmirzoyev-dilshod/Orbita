@@ -145,4 +145,15 @@ router.post('/tasks/:id', wrap(async (req, res) => {
   res.json({ ok: true });
 }));
 
+// Объявление всем сотрудникам команды (Telegram + уведомления Орбиты)
+router.post('/announce', wrap(async (req, res) => {
+  const text = String((req.body || {}).text || '').trim().slice(0, 1500);
+  if (!text) return res.status(400).json({ error: 'Пустое объявление' });
+  const { members } = await context(req.me);
+  const who = await L.memberName(req.me.id);
+  const to = members.filter(m => m.id !== req.me.id && !m.demo);
+  for (const m of to) await L.notify(m.id, `📢 Объявление от ${who}\n\n${text}`, { kind: 'info' });
+  res.json({ ok: true, sent: to.length, names: to.map(fullName) });
+}));
+
 module.exports = router;
