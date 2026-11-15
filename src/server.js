@@ -375,16 +375,34 @@ app.post('/api/company/tasks/purge', auth(), wrap(async (req, res) => {
   if (!L.isAdmin(req.me)) return res.status(403).json({ error: 'Удалить все задачи могут учредитель, владелец или директор' });
   const co = await db.one(`SELECT name FROM companies WHERE id=$1`, [req.me.company_id]);
   if (clean(req.body.confirm, 120).toLowerCase() !== co.name.trim().toLowerCase()) return res.status(400).json({ error: `Для подтверждения введите название компании: ${co.name}` });
-  const ids = (await db.all(`SELECT id FROM tasks WHERE company_id=$1`, [req.me.company_id])).map(r => r.id);
-  for (const id of ids) await L.syncTaskMessages(id, 'deleted').catch(() => {});   // кнопки в боте → «удалена»
-  const n = await db.tx(async c => {
-    await c.query(`UPDATE reminders SET status='cancelled' WHERE entity_type='task' AND entity_id = ANY($1) AND status='pending'`, [ids]);
-    await c.query(`DELETE FROM task_series WHERE company_id=$1`, [req.me.company_id]);
-    return (await c.query(`DELETE FROM tasks WHERE company_id=$1`, [req.me.company_id])).rowCount;
-  });
+  const n = await purgeCompanyTasks(req.me.company_id);
   console.log(`[purge] company ${req.me.company_id}: удалено задач ${n} (member ${req.me.id})`);
   res.json({ ok: true, deleted: n });
 }));
+async function purgeCompanyTasks(companyId) {
+  const ids = (await db.all(`SELECT id FROM tasks WHERE company_id=$1`, [companyId])).map(r => r.id);
+  for (const id of ids) await L.syncTaskMessages(id, 'deleted').catch(() => {});   // кнопки в боте → «удалена»
+  return db.tx(async c => {
+    await c.query(`UPDATE reminders SET status='cancelled' WHERE entity_type='task' AND entity_id = ANY($1) AND status='pending'`, [ids]);
+    await c.query(`DELETE FROM task_series WHERE company_id=$1`, [companyId]);
+    return (await c.query(`DELETE FROM tasks WHERE company_id=$1`, [companyId])).rowCount;
+  });
+}
+// разовая очистка по просьбе владельца (15.11.2026): все задачи Fly Marakand. Выполняется один раз (метка в kv),
+// только если такая компания одна; владельцу — отчёт в Telegram.
+async function purgeOnce() {
+  const KEY = 'purge:fly-marakand:2026-11-15';
+  if (await db.one(`SELECT 1 FROM kv WHERE k=$1`, [KEY])) return;
+  const cos = await db.all(`SELECT id, name FROM companies WHERE lower(trim(name)) = 'fly marakand'`);
+  if (cos.length !== 1) { console.log(`[purge-once] пропущено: компаний «Fly Marakand» найдено ${cos.length}`); return; }
+  const co = cos[0];
+  await db.q(`INSERT INTO kv (k, v) VALUES ($1, 'running') ON CONFLICT (k) DO NOTHING`, [KEY]);
+  const n = await purgeCompanyTasks(co.id);
+  await db.q(`UPDATE kv SET v=$2 WHERE k=$1`, [KEY, `done: company ${co.id}, deleted ${n}`]);
+  console.log(`[purge-once] Fly Marakand (company ${co.id}): удалено задач ${n}`);
+  const owner = await db.one(`SELECT u.tg_id FROM members m JOIN users u ON u.id=m.user_id WHERE m.company_id=$1 AND m.role='owner' AND m.active AND u.tg_id IS NOT NULL LIMIT 1`, [co.id]);
+  if (owner) await tg.send(owner.tg_id, `🗑 Задачи «${co.name}» обнулены: удалено ${n}. Сотрудники, структура, планы и кошелёк на месте.`).catch(() => {});
+}
 app.post('/api/tasks/:id/comments', auth(), wrap(async (req, res) => {
   const t = await visibleTask(req.me, Number(req.params.id));
   if (!t) return res.status(404).json({ error: 'Задача не найдена' });
@@ -822,6 +840,7 @@ async function main() {
   if (!process.env.DATABASE_URL) { console.error('Нет DATABASE_URL — подключите PostgreSQL'); process.exit(1); }
   await db.migrate();
   await require('./pay').migrate().catch(e => console.error('[pay] migrate', e.message));
+  await purgeOnce().catch(e => console.error('[purge-once]', e.message));
   const port = Number(process.env.PORT) || 3000;
   app.listen(port, () => console.log(`Орбита запущена на порту ${port}`));
   if (tg.enabled()) tg.poll(); else console.warn('BOT_TOKEN не задан — бот выключен');
