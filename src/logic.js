@@ -54,7 +54,7 @@ async function memberName(id) {
   return r ? r.name : 'Сотрудник';
 }
 
-async function changeStatus(taskId, actorId, status) {
+async function changeStatus(taskId, actorId, status, opts = {}) {
   const t = await db.one(`SELECT * FROM tasks WHERE id=$1`, [taskId]);
   if (!t || t.status === status) return t;
   const doneOn = status === 'done' ? today() : null;
@@ -63,7 +63,8 @@ async function changeStatus(taskId, actorId, status) {
   if (status === 'done') { await cancelReminders('task', taskId); await syncTaskMessages(taskId, 'done'); }
   const who = await memberName(actorId);
   if (t.author_id && t.author_id !== actorId) {
-    const text = status === 'done' ? `✅ ${who} выполнил(а) задачу\n«${t.title}»`
+    const text = opts.autoAccept ? `👍 ${who} принял(а) задачу — ${opts.autoAccept === 'tg' ? 'увидел(а) уведомление в Telegram' : 'открыл(а) её в «Орбите»'}\n«${t.title}»`
+      : status === 'done' ? `✅ ${who} выполнил(а) задачу\n«${t.title}»`
       : status === 'review' ? `👀 ${who} отправил(а) на проверку\n«${t.title}»`
       : `🔄 ${who}: статус «${STATUS[status]}»\n«${t.title}»`;
     await notify(t.author_id, text, { kind: status === 'done' ? 'done' : 'status', path: '/#tasks' });
@@ -292,10 +293,33 @@ async function cancelReminders(entityType, id) {
 }
 // поменять кнопки во всех сообщениях бота о задаче (выполнена на сайте → «✅ Выполнено» в Telegram)
 async function syncTaskMessages(taskId, state) {
-  const label = state === 'done' ? '✅ Выполнено' : '🗑 Задача удалена';
   const msgs = await db.all(`SELECT chat_id, message_id FROM tg_msgs WHERE task_id=$1 AND kind='task' AND created_at > now() - interval '45 days'`, [taskId]);
-  for (const m of msgs) await tg.call('editMessageReplyMarkup', { chat_id: m.chat_id, message_id: m.message_id, reply_markup: { inline_keyboard: [[{ text: label, callback_data: 'noop' }]] } });
+  let kb;
+  if (state === 'accepted') {   // принята: вместо «Принял» — рабочие кнопки
+    const t = await db.one(`SELECT * FROM tasks WHERE id=$1`, [taskId]); if (!t) return;
+    kb = [[{ text: '👍 Принято', callback_data: 'noop' }, { text: '✅ Сделал', callback_data: `done:${t.id}` }],
+      [{ text: t.more_asked ? '⏳ Запрос отправлен' : '⏳ Нужно больше времени', callback_data: `more:${t.id}` }, { text: '📎 Файл', callback_data: `att:${t.id}` }], ...tg.checkRows(t.id, t.checklist)];
+  } else kb = [[{ text: state === 'done' ? '✅ Выполнено' : '🗑 Задача удалена', callback_data: 'noop' }]];
+  for (const m of msgs) await tg.call('editMessageReplyMarkup', { chat_id: m.chat_id, message_id: m.message_id, reply_markup: { inline_keyboard: kb } });
 }
+// автопринятие: исполнитель увидел задачу (открыл на сайте / в уведомлениях / что-то сделал в боте) → «Новая» становится «В работе».
+// Свои личные задачи (автор = исполнитель) не трогаем. via: 'site' | 'tg'
+async function autoAccept(memberIds, { taskId = null, via = 'site', onlyNotifiedTg = false } = {}) {
+  const ids = [].concat(memberIds).filter(Boolean); if (!ids.length) return 0;
+  const rows = await db.all(`SELECT t.id, t.assignee_id FROM tasks t WHERE t.assignee_id = ANY($1) AND t.status='new' AND t.author_id IS DISTINCT FROM t.assignee_id
+      ${taskId ? 'AND t.id=$2' : ''} ${onlyNotifiedTg ? `AND EXISTS (SELECT 1 FROM tg_msgs g WHERE g.task_id=t.id AND g.kind='task')` : ''}`, taskId ? [ids, taskId] : [ids]);
+  for (const r of rows) {
+    await db.q(`UPDATE tasks SET accepted_at=now(), accepted_via=$2 WHERE id=$1`, [r.id, via]);
+    await changeStatus(r.id, r.assignee_id, 'progress', { autoAccept: via });
+    await syncTaskMessages(r.id, 'accepted').catch(() => {});
+  }
+  return rows.length;
+}
+// бот: человек нажал кнопку или написал — значит, видел уведомления, которые бот ему прислал
+tg.handlers.touch = async tgId => {
+  const ms = await db.all(`SELECT m.id FROM members m JOIN users u ON u.id=m.user_id WHERE u.tg_id=$1 AND m.active`, [tgId]);
+  if (ms.length) await autoAccept(ms.map(m => m.id), { via: 'tg', onlyNotifiedTg: true });
+};
 async function syncPlanMessages(planId, done) {
   const msgs = await db.all(`SELECT chat_id, message_id FROM tg_msgs WHERE plan_id=$1 AND kind='plan'`, [planId]);
   for (const m of msgs) await tg.call('editMessageReplyMarkup', { chat_id: m.chat_id, message_id: m.message_id, reply_markup: { inline_keyboard: done ? [[{ text: '✅ Выполнено', callback_data: 'noop' }]] : tg.remindKb('p', planId) } });
@@ -553,4 +577,4 @@ tg.handlers.extend = async (taskId, userId, code) => {
 
 function addMinutes(hhmm, n) { const [h, m] = hhmm.split(':').map(Number); const x = h * 60 + m + n; return `${String(Math.min(23, Math.floor(x / 60))).padStart(2, '0')}:${String(x >= 1440 ? 59 : x % 60).padStart(2, '0')}`; }
 
-module.exports = { attachFile, cancelReminders, syncTaskMessages, syncPlanMessages, setTaskRemind, snoozeAt, remindersTick, REPEAT_RU, seriesMatches, runSeries, seriesTick, toggleCheck, markDone, photoReport, askMore, parseChecklist, canSeeTask, createTask, addComment, primaryMemberId, EXT, extendTask, canExtend, ADMIN, isAdmin, STATUS, PRIO, companyMembers, scopeOf, notify, memberName, changeStatus, morningDigest, eveningDigest, tick };
+module.exports = { autoAccept, attachFile, cancelReminders, syncTaskMessages, syncPlanMessages, setTaskRemind, snoozeAt, remindersTick, REPEAT_RU, seriesMatches, runSeries, seriesTick, toggleCheck, markDone, photoReport, askMore, parseChecklist, canSeeTask, createTask, addComment, primaryMemberId, EXT, extendTask, canExtend, ADMIN, isAdmin, STATUS, PRIO, companyMembers, scopeOf, notify, memberName, changeStatus, morningDigest, eveningDigest, tick };

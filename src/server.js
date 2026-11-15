@@ -244,7 +244,7 @@ app.get('/api/state', auth(), wrap(async (req, res) => {
     users: members.map(m => ({ id: m.id, name: m.name, first: m.first_name || '', last: m.last_name || '', nameOk: Boolean(m.name_ok || m.demo), demo: Boolean(m.demo), role: m.role === 'worker' ? 'worker' : 'manager', level: m.role, pos: m.role === 'owner' ? (m.pos === 'director' ? 'director' : 'founder') : null, owner: m.role === 'owner', admin: L.ADMIN.includes(m.role), dept: m.dept || 'Без отдела', deptId: m.dept_id, deptColor: m.dept_color || '#9AA3C7', plansOn: m.plans_on, walletOn: m.wallet_on, title: m.title || '', boss: m.boss_id, tg: Boolean(m.tg_id) && (m.settings || {}).tg !== false, username: m.username })),
     tasks: tasks.map(t => ({ id: t.id, title: t.title, desc: t.descr, assignee: t.assignee_id, author: t.author_id, priority: t.priority, status: t.status, created: t.created_on, due: t.due, dueTime: t.due_time, ext: t.extended, remind: t.remind_at, doneAt: t.done_on,
       comments: comments.filter(c => c.task_id === t.id).map(c => ({ id: c.id, u: c.member_id, t: c.text, at: c.at, f: Boolean(c.file_id), a: c.attach_id && attMap[c.attach_id] ? { id: c.attach_id, name: attMap[c.attach_id].name, mime: attMap[c.attach_id].mime, size: attMap[c.attach_id].size } : null })),
-      seenAt: t.seen_at, snoozeUntil: t.snooze_until, remindOff: t.remind_off, photo: t.requires_photo, checklist: Array.isArray(t.checklist) ? t.checklist : [], series: t.series_id ? { id: t.series_id, repeat: (seriesMap[t.series_id] || {}).repeat, active: (seriesMap[t.series_id] || {}).active } : null })),
+      seenAt: t.seen_at, acceptedAt: t.accepted_at, acceptedVia: t.accepted_via, snoozeUntil: t.snooze_until, remindOff: t.remind_off, photo: t.requires_photo, checklist: Array.isArray(t.checklist) ? t.checklist : [], series: t.series_id ? { id: t.series_id, repeat: (seriesMap[t.series_id] || {}).repeat, active: (seriesMap[t.series_id] || {}).active } : null })),
     plans: P,
     habits: habits.map(h => ({ id: h.id, name: h.name, note: h.note, wdays: h.wdays, start: h.start_on, until: h.until, time: h.time, remind: h.remind, days: Object.fromEntries(marks.filter(m => m.habit_id === h.id).map(m => [m.day, true])) })),
     notifs: notifs.map(n => ({ id: n.id, to: me.id, text: n.text, at: n.at, read: n.read })),
@@ -616,8 +616,15 @@ app.delete('/api/habits/:id', auth(), wrap(async (req, res) => {
 }));
 
 /* ---------- уведомления, настройки, команда ---------- */
+// исполнитель открыл карточку задачи → задача принята
+app.post('/api/tasks/:id/seen', auth(), wrap(async (req, res) => {
+  if (req.s.back) return res.json({ ok: true, accepted: 0 });   // руководитель «смотрит как» — не принимаем за сотрудника
+  const n = await L.autoAccept(req.me.id, { taskId: Number(req.params.id), via: 'site' });
+  res.json({ ok: true, accepted: n });
+}));
 app.post('/api/notifs/read', auth(), wrap(async (req, res) => {
   await db.q(`UPDATE notifs SET read=true WHERE member_id=$1`, [req.me.id]);
+  if (!req.s.back) await L.autoAccept(req.me.id, { via: 'site' });   // посмотрел уведомления → новые задачи приняты
   res.json({ ok: true });
 }));
 app.patch('/api/settings', auth(), wrap(async (req, res) => {

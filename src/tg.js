@@ -111,6 +111,7 @@ async function onMessage(m) {
   const chat = m.chat.id;
   if (m.chat.type !== 'private') return;
   const user = await upsertUser(m.from);
+  if (handlers.touch) await handlers.touch(m.from.id).catch(e => console.warn('[touch]', e.message));
 
   // фото (фото-отчёт): ответом на сообщение о задаче
   const photo = (m.photo && m.photo.length && m.photo[m.photo.length - 1].file_id) || (m.document && /^image\//.test(m.document.mime_type || '') && m.document.file_id);
@@ -231,6 +232,8 @@ async function onMessage(m) {
 
 async function onCallback(cq) {
   const data = cq.data || '';
+  // любое нажатие в боте = человек видел уведомления → новые задачи принимаются автоматически
+  if (handlers.touch && cq.from) await handlers.touch(cq.from.id).catch(e => console.warn('[touch]', e.message));
   if (handlers.callback && await handlers.callback(cq)) return;
   // напоминания: видел / позже / не напоминать / план выполнен
   const rm = data.match(/^(seen|snz|sz|off|back|pdone):(?:(t|p):)?(\d+)(?::(\w+))?$/);

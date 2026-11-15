@@ -935,14 +935,19 @@ function openNew(forUser){
   </form>`);
   setTimeout(()=>$('n-title').focus(),30);
 }
+const fmtAccepted = iso => { const d = new Date(iso); return isNaN(d) ? '' : d.toLocaleString('ru-RU',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit',timeZone:'Asia/Tashkent'}); };
 function openTask(id){
   const t = S.tasks.find(x=>x.id===id); if(!t) return;
+  // исполнитель открыл новую задачу → она принята автоматически
+  if(t.assignee===S.me && t.status==='new' && t.author!==S.me && !ME.viewingAs && !t._seenSent){ t._seenSent = true;
+    api('POST','/api/tasks/'+t.id+'/seen').then(async r=>{ if(r.accepted){ LAST_MUT=Date.now(); await reload(); render(); if($('modal')&&$('modal').innerHTML) openTask(id); toast('Задача принята в работу 👍'); } }).catch(()=>{}); }
   const a = U(t.assignee), au = U(t.author), canStatus = t.assignee===S.me || isMgr() || t.author===S.me;
   modal(`<div class="modal" role="dialog" aria-label="Задача">
     <div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start"><h2 style="margin:0 0 6px">${esc(t.title)}</h2>${statusChip(t)}</div>
     ${t.desc?`<p style="margin:0 0 12px;color:var(--muted);white-space:pre-line">${esc(t.desc)}</p>`:''}
     <dl class="dl"><dt>Исполнитель</dt><dd>${esc(a.name)}${a.title?' · '+esc(a.title):''}</dd><dt>Поставил</dt><dd>${esc(au.name)}</dd><dt>Срок</dt><dd${late(t)?' style="color:var(--bad);font-weight:700"':''}>${dueText(t)}${t.ext?` <span class="note">· продлевали ${t.ext} раз</span>`:''}</dd><dt>Приоритет</dt><dd class="p-${t.priority}">${PRIO[t.priority]}</dd>${t.remind?`<dt>Напомнить в</dt><dd>${fmtDT(t.remind)}</dd>`:''}</dl>
     ${t.series?`<div class="serbox">🔁 Повторяется: <b>${esc(REPEAT_RU[t.series.repeat]||'')}</b>${t.series.active?'':' · остановлено'}${t.series.active&&(t.author===S.me||isOwner())?` <button type="button" class="linkbtn" data-stopser="${t.series.id}">Остановить повтор</button>`:''}</div>`:''}
+    ${t.acceptedAt?`<div class="serbox">👍 Принята ${fmtAccepted(t.acceptedAt)} — ${t.acceptedVia==='tg'?'исполнитель увидел уведомление в Telegram':'исполнитель открыл задачу в «Орбите»'}</div>`:''}
     ${t.photo?`<div class="serbox">📎 Нужен отчёт — фото или файл. Задача закроется, когда исполнитель его приложит.</div>`:''}
     ${t.checklist.length?`<div class="field"><label>Чек-лист · ${t.checklist.filter(c=>c.d).length} из ${t.checklist.length}</label></div><div class="cklist">${t.checklist.map((c,i)=>`<label class="ck ${c.d?'on':''}"><input type="checkbox" data-ck="${t.id}|${i}" ${c.d?'checked':''} ${canStatus?'':'disabled'}><span>${esc(c.t)}</span></label>`).join('')}</div>`:''}
     ${t.assignee===S.me&&t.author!==S.me&&t.status!=='done'?`<div style="margin:0 0 10px"><button type="button" class="btn sm" data-more="${t.id}">⏳ Нужно больше времени</button></div>`:''}
