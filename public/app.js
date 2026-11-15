@@ -1058,7 +1058,8 @@ function openProfile(){
     ${nameFields('p', ...splitName(ME.user))}
     ${isOwner()?`<div class="field"><label for="p-co">Название компании</label><input id="p-co" value="${esc(S.company.name)}" required></div>
     <div class="field"><label>Логотип компании</label><div class="logorow"><span class="ws">${coLogo().replace('id="logo-input"','id="logo-input2"').replace('for="logo-input"','for="logo-input2"')}</span><label class="btn sm" for="logo-input2">${S.company.logo!=null?'Сменить':'Загрузить'}</label>${S.company.logo!=null?'<button type="button" class="btn sm" data-act="logo-del" style="color:var(--bad)">Убрать</button>':''}<span class="note">PNG, JPG, WEBP · до 2 МБ · лучше квадратный</span></div></div>`:''}
-    <div class="mact"><button type="button" class="btn" data-close="1">Отмена</button><button class="btn primary" type="submit">Сохранить</button></div></form>`);
+    <div class="mact"><button type="button" class="btn" data-close="1">Отмена</button><button class="btn primary" type="submit">Сохранить</button></div>
+    ${isOwner()?`<div class="danger"><b>Опасная зона</b><p class="note" style="margin:4px 0 10px">Удалить все задачи компании (${S.tasks.length}) вместе с повторами, комментариями, файлами и напоминаниями. Личные планы и кошелёк останутся. Отменить нельзя.</p><button type="button" class="btn sm" data-act="purge-open" style="color:var(--bad);border-color:var(--bad)">Удалить все задачи…</button></div>`:''}</form>`);
 }
 
 /* ---------- рендер ---------- */
@@ -1131,6 +1132,11 @@ document.addEventListener('click', e => {
   if(a==='invite') return openInvite();
   if(a==='invite-dept'){ const did=Number(el.dataset.id); openInvite(did); const h=S.users.find(u=>u.deptId===did&&u.level==='manager'); if(h&&$('i-boss')) $('i-boss').value=h.id; return; }
   if(a==='dept-new') return openDept();
+  if(a==='purge-open') return modal(`<form class="modal" id="purge-form" role="dialog" aria-label="Удалить все задачи"><h2>Удалить все задачи?</h2>
+    <p>Будут удалены <b>все ${S.tasks.length} задач</b> компании «${esc(S.company.name)}»: текущие, выполненные и просроченные, а также повторяющиеся задачи, комментарии, файлы-отчёты, чек-листы и напоминания. <b>Восстановить их будет нельзя.</b></p>
+    <p class="note">Личные планы, кошелёк, сотрудники и структура компании останутся.</p>
+    <div class="field"><label for="pg-confirm">Для подтверждения введите название компании: <b>${esc(S.company.name)}</b></label><input id="pg-confirm" autocomplete="off" required></div>
+    <div class="mact"><button type="button" class="btn" data-close="1">Отмена</button><button class="btn" type="submit" style="background:var(--bad);border-color:var(--bad);color:#fff">Удалить навсегда</button></div></form>`);
   if(a==='dept-ren') return openDept(Number(el.dataset.id));
   if(a==='dept-del'){ if(el.dataset.confirm!=='1'){ el.dataset.confirm='1'; el.textContent='Удалить?'; el.style.color='var(--bad)'; return; } return act(()=>api('DELETE','/api/depts/'+el.dataset.id),'Отдел удалён — люди перешли в «Без отдела»'); }
   if(a==='demo-add-close'){ closeModal(); return act(()=>api('POST','/api/demo'),'Добавлены 3 демо-сотрудника — теперь им можно ставить задачи').then(()=>openNew()); }
@@ -1221,6 +1227,7 @@ document.addEventListener('submit', async e => {
       if($('e-first')){ body.firstName = $('e-first').value; body.lastName = $('e-last').value; }
       await api('PATCH','/api/members/'+f.dataset.id, body); closeModal(); await reload(); render(); return toast('Сохранено');
     }
+    if(f.id==='purge-form'){ const r = await api('POST','/api/company/tasks/purge',{confirm:$('pg-confirm').value}); closeModal(); LAST_MUT=Date.now(); await reload(); render(); return toast(`Удалено задач: ${r.deleted}`); }
     if(f.id==='namegate-form'){ const r = await api('POST','/api/profile/name',{firstName:$('ng-first').value, lastName:$('ng-last').value}); $('namegate').remove(); ME = await api('GET','/api/me'); await reload(); shell(); render(); return toast('Спасибо, '+r.name+'!'); }
     if(f.id==='join-form'){ await api('POST','/api/invite/'+f.dataset.code+'/accept',{firstName:$('j-first').value, lastName:$('j-last').value}); history.replaceState(null,'','/'); toast('Добро пожаловать в команду!'); return boot(); }
     if(f.id==='profile-form'){ await api('POST','/api/profile/name',{firstName:$('p-first').value, lastName:$('p-last').value}); if($('p-co')) await api('PATCH','/api/company',{name:$('p-co').value}); closeModal(); ME = await api('GET','/api/me'); await reload(); shell(); render(); return toast('Сохранено'); }

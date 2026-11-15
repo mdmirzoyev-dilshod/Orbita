@@ -369,6 +369,22 @@ app.delete('/api/tasks/:id', auth(), wrap(async (req, res) => {
   await db.q(`DELETE FROM tasks WHERE id=$1`, [t.id]);
   res.json({ ok: true });
 }));
+// удалить ВСЕ задачи компании (с повторами, комментариями, файлами, напоминаниями) — только руководство,
+// с подтверждением названием компании. Личные планы и кошелёк не затрагиваются.
+app.post('/api/company/tasks/purge', auth(), wrap(async (req, res) => {
+  if (!L.isAdmin(req.me)) return res.status(403).json({ error: 'Удалить все задачи могут учредитель, владелец или директор' });
+  const co = await db.one(`SELECT name FROM companies WHERE id=$1`, [req.me.company_id]);
+  if (clean(req.body.confirm, 120).toLowerCase() !== co.name.trim().toLowerCase()) return res.status(400).json({ error: `Для подтверждения введите название компании: ${co.name}` });
+  const ids = (await db.all(`SELECT id FROM tasks WHERE company_id=$1`, [req.me.company_id])).map(r => r.id);
+  for (const id of ids) await L.syncTaskMessages(id, 'deleted').catch(() => {});   // кнопки в боте → «удалена»
+  const n = await db.tx(async c => {
+    await c.query(`UPDATE reminders SET status='cancelled' WHERE entity_type='task' AND entity_id = ANY($1) AND status='pending'`, [ids]);
+    await c.query(`DELETE FROM task_series WHERE company_id=$1`, [req.me.company_id]);
+    return (await c.query(`DELETE FROM tasks WHERE company_id=$1`, [req.me.company_id])).rowCount;
+  });
+  console.log(`[purge] company ${req.me.company_id}: удалено задач ${n} (member ${req.me.id})`);
+  res.json({ ok: true, deleted: n });
+}));
 app.post('/api/tasks/:id/comments', auth(), wrap(async (req, res) => {
   const t = await visibleTask(req.me, Number(req.params.id));
   if (!t) return res.status(404).json({ error: 'Задача не найдена' });
