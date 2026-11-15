@@ -403,6 +403,45 @@ async function purgeOnce() {
   const owner = await db.one(`SELECT u.tg_id FROM members m JOIN users u ON u.id=m.user_id WHERE m.company_id=$1 AND m.role='owner' AND m.active AND u.tg_id IS NOT NULL LIMIT 1`, [co.id]);
   if (owner) await tg.send(owner.tg_id, `🗑 Задачи «${co.name}» обнулены: удалено ${n}. Сотрудники, структура, планы и кошелёк на месте.`).catch(() => {});
 }
+// разовая постановка задач по просьбе владельца (15.11.2026): всем руководителям отделов Fly Marakand —
+// подготовка к собранию в понедельник 16.11 в 17:00. Один раз (метка в kv); владельцу — отчёт в Telegram.
+async function meetingTasksOnce() {
+  const KEY = 'tasks:fly-marakand:meeting-2026-11-16';
+  if (await db.one(`SELECT 1 FROM kv WHERE k=$1`, [KEY])) return;
+  const cos = await db.all(`SELECT id, name FROM companies WHERE lower(trim(name)) IN ('fly marakand', 'fly marakanda')`);
+  if (cos.length !== 1) { console.log(`[meeting-once] пропущено: компаний «Fly Marakand» найдено ${cos.length}`); return; }
+  const co = cos[0];
+  const author = await db.one(`SELECT * FROM members WHERE company_id=$1 AND role='owner' AND active LIMIT 1`, [co.id]);
+  if (!author) { console.log('[meeting-once] пропущено: нет владельца'); return; }
+  const heads = await db.all(`SELECT m.id, u.name, d.name AS dept FROM members m JOIN users u ON u.id=m.user_id LEFT JOIN depts d ON d.id=m.dept_id
+                              WHERE m.company_id=$1 AND m.role='manager' AND m.active AND m.id<>$2 ORDER BY u.name`, [co.id, author.id]);
+  await db.q(`INSERT INTO kv (k, v) VALUES ($1, 'running') ON CONFLICT (k) DO NOTHING`, [KEY]);
+  const isFin = h => /фин|бух/i.test(h.dept || '');
+  const anyFin = heads.some(isFin);
+  const done = [];
+  for (const h of heads) {
+    const checklist = [
+      'Проблемы в отделе',
+      'План по повышению прибыли на месяц (туризм / авиабилеты)',
+      'Предварительный план по повышению работников',
+      ...(isFin(h) || !anyFin ? ['Фин. отдел: анализ продаж — прошлый и текущий месяц'] : []),
+      'С кем мы работаем и кто с нами не работает (туризм / авиабилеты)',
+      'Анализ по работникам: потенциал каждого',
+    ];
+    const r = await L.createTask(author, {
+      title: 'Собрание в понедельник в 17:00 — подготовить отчёт по отделу',
+      desc: 'Собрание руководителей в понедельник, 16 ноября, в 17:00. Подготовьте по своему отделу материалы по пунктам чек-листа и принесите на собрание.',
+      assignee: h.id, due: '2026-11-16', dueTime: '17:00', priority: 'high', checklist,
+    }).catch(e => ({ error: e.message }));
+    if (r && r.task) done.push(h.name); else console.log(`[meeting-once] ${h.name}: ${r && r.error}`);
+  }
+  await db.q(`UPDATE kv SET v=$2 WHERE k=$1`, [KEY, `done: company ${co.id}, tasks ${done.length}: ${done.join(', ')}`]);
+  console.log(`[meeting-once] Fly Marakand: задач поставлено ${done.length} (${done.join(', ')})`);
+  const owner = await db.one(`SELECT tg_id FROM users WHERE id=$1 AND tg_id IS NOT NULL`, [author.user_id]);
+  if (owner) await tg.send(owner.tg_id, done.length
+    ? `📌 Задача «Собрание в понедельник в 17:00» поставлена руководителям отделов (${done.length}): ${done.join(', ')}.\nСрок — 16 ноября до 17:00, в задаче чек-лист из 6 пунктов.`
+    : '⚠️ Задачу на собрание поставить некому: в Fly Marakand нет руководителей отделов. Назначьте их в «Команда → Структура» и напишите мне.').catch(() => {});
+}
 app.post('/api/tasks/:id/comments', auth(), wrap(async (req, res) => {
   const t = await visibleTask(req.me, Number(req.params.id));
   if (!t) return res.status(404).json({ error: 'Задача не найдена' });
@@ -841,6 +880,7 @@ async function main() {
   await db.migrate();
   await require('./pay').migrate().catch(e => console.error('[pay] migrate', e.message));
   await purgeOnce().catch(e => console.error('[purge-once]', e.message));
+  await meetingTasksOnce().catch(e => console.error('[meeting-once]', e.message));
   const port = Number(process.env.PORT) || 3000;
   app.listen(port, () => console.log(`Орбита запущена на порту ${port}`));
   if (tg.enabled()) tg.poll(); else console.warn('BOT_TOKEN не задан — бот выключен');
