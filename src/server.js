@@ -393,7 +393,7 @@ async function purgeCompanyTasks(companyId) {
 async function purgeOnce() {
   const KEY = 'purge:fly-marakand:2026-11-15';
   if (await db.one(`SELECT 1 FROM kv WHERE k=$1`, [KEY])) return;
-  const cos = await db.all(`SELECT id, name FROM companies WHERE lower(trim(name)) = 'fly marakand'`);
+  const cos = await db.all(`SELECT id, name FROM companies WHERE lower(trim(name)) IN ('fly marakand', 'fly marakanda')`);
   if (cos.length !== 1) { console.log(`[purge-once] пропущено: компаний «Fly Marakand» найдено ${cos.length}`); return; }
   const co = cos[0];
   await db.q(`INSERT INTO kv (k, v) VALUES ($1, 'running') ON CONFLICT (k) DO NOTHING`, [KEY]);
