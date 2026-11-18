@@ -200,10 +200,29 @@ app.post('/api/invite/:code/accept', auth(false), wrap(async (req, res) => {
   });
   if (r.error) return res.status(404).json(r);
   await db.q(`UPDATE sessions SET member_id=$1 WHERE token=$2`, [r.m.id, req.s.token]);
+  await alignDeptBoss(r.m.company_id, r.m.id);
   if (r.i.created_by) await L.notify(r.i.created_by, `👋 ${req.s.user.name} принял(а) приглашение и теперь в команде${r.i.title ? ' (' + r.i.title + ')' : ''}.`, { kind: 'info', path: '/#team' });
   await L.notify(r.m.id, `👋 Добро пожаловать в «Орбиту»!\n\nСюда будут приходить новые задачи, напоминания о сроках, утренняя сводка и вечерние итоги. Настройки — в разделе «Уведомления».`, { kind: 'info' });
   res.json({ ok: true });
 }));
+
+// работник отдела подчиняется руководителю своего отдела: если его записанный руководитель не из этого отдела
+// (например, пригласил директор или владелец), переназначаем на руководителя отдела. memberId — только этого человека.
+async function alignDeptBoss(companyId, memberId = null) {
+  return (await db.q(`UPDATE members w SET boss_id = h.id
+    FROM members h
+    WHERE w.company_id=$1 AND w.role='worker' AND w.active AND w.dept_id IS NOT NULL ${memberId ? 'AND w.id=$2' : ''}
+      AND h.id = (SELECT x.id FROM members x WHERE x.company_id=w.company_id AND x.dept_id=w.dept_id AND x.role='manager' AND x.active ORDER BY x.id LIMIT 1)
+      AND h.id <> w.id
+      AND (w.boss_id IS NULL OR NOT EXISTS (SELECT 1 FROM members b WHERE b.id=w.boss_id AND b.active AND b.dept_id=w.dept_id))`, memberId ? [companyId, memberId] : [companyId])).rowCount;
+}
+async function alignDeptBossOnce() {
+  const KEY = 'fix:dept-boss:2026-11-18';
+  if (await db.one(`SELECT 1 FROM kv WHERE k=$1`, [KEY])) return;
+  let n = 0; for (const c of await db.all(`SELECT id FROM companies`)) n += await alignDeptBoss(c.id);
+  await db.q(`INSERT INTO kv (k, v) VALUES ($1, $2) ON CONFLICT (k) DO NOTHING`, [KEY, `fixed ${n}`]);
+  console.log(`[dept-boss] работников переподчинено руководителям отделов: ${n}`);
+}
 
 /* ---------- состояние для интерфейса ---------- */
 app.get('/api/state', auth(), wrap(async (req, res) => {
@@ -673,6 +692,7 @@ app.patch('/api/members/:id', auth(), wrap(async (req, res) => {
   const active = b.active === false && m.role !== 'owner' ? false : m.active;
   await db.q(`UPDATE members SET role=$1, dept_id=$2, title=$3, boss_id=$4, active=$5, plans_on=$6, wallet_on=$7, pos=$9 WHERE id=$8`,
     [role, deptId, (() => { const t = b.title !== undefined ? clean(b.title, 60) : m.title; return role !== m.role && (t === m.title || STD_TITLES.includes(String(t || '').toLowerCase())) ? titleFor(t, role) : t; })(), bossId, active, typeof b.plansOn === 'boolean' ? b.plansOn : m.plans_on, typeof b.walletOn === 'boolean' ? b.walletOn : m.wallet_on, m.id, pos]);
+  if (deptId !== m.dept_id && b.bossId === undefined) await alignDeptBoss(req.me.company_id, m.id);
   res.json({ ok: true });
 }));
 /* ---------- отделы и структура компании ---------- */
@@ -898,6 +918,7 @@ async function main() {
   await require('./pay').migrate().catch(e => console.error('[pay] migrate', e.message));
   await purgeOnce().catch(e => console.error('[purge-once]', e.message));
   await meetingTasksOnce().catch(e => console.error('[meeting-once]', e.message));
+  await alignDeptBossOnce().catch(e => console.error('[dept-boss]', e.message));
   const port = Number(process.env.PORT) || 3000;
   app.listen(port, () => console.log(`Орбита запущена на порту ${port}`));
   if (tg.enabled()) tg.poll(); else console.warn('BOT_TOKEN не задан — бот выключен');

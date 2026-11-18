@@ -25,8 +25,11 @@ function scopeOf(member, members) {
     grew = false;
     for (const m of members) if (!ids.has(m.id) && m.boss_id && ids.has(m.boss_id)) { ids.add(m.id); grew = true; }
   }
-  // сотрудники своего отдела без явного руководителя тоже видны руководителю отдела
-  for (const m of members) if (m.role === 'worker' && m.dept_id && m.dept_id === member.dept_id && !m.boss_id) ids.add(m.id);
+  // руководитель отдела отвечает за всех работников своего отдела — даже если их пригласил директор или владелец
+  for (const m of members) if (m.role === 'worker' && m.dept_id && m.dept_id === member.dept_id) ids.add(m.id);
+  // …и за всех, кто ниже них по цепочке
+  grew = true;
+  while (grew) { grew = false; for (const m of members) if (!ids.has(m.id) && m.boss_id && ids.has(m.boss_id)) { ids.add(m.id); grew = true; } }
   return [...ids];
 }
 
@@ -194,7 +197,11 @@ async function tick() {
 function subordinatesOf(member, members) {
   const ids = new Set([member.id]); let grew = true;
   while (grew) { grew = false; for (const m of members) if (!ids.has(m.id) && m.boss_id && ids.has(m.boss_id)) { ids.add(m.id); grew = true; } }
-  if (member.role === 'manager') for (const m of members) if (m.role === 'worker' && m.dept_id && m.dept_id === member.dept_id && !m.boss_id) ids.add(m.id);
+  if (member.role === 'manager') {
+    for (const m of members) if (m.role === 'worker' && m.dept_id && m.dept_id === member.dept_id) ids.add(m.id);
+    grew = true;
+    while (grew) { grew = false; for (const m of members) if (!ids.has(m.id) && m.boss_id && ids.has(m.boss_id)) { ids.add(m.id); grew = true; } }
+  }
   ids.delete(member.id);
   return [...ids];
 }
