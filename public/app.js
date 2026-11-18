@@ -915,8 +915,14 @@ function openWalletEdit(id){
 const modal = html => { $('modal').innerHTML = `<div class="ov" data-close="1">${html}</div>`; };
 function closeModal(){ $('modal').innerHTML=''; if(SYNC_PENDING) setTimeout(liveRefresh, 50); }
 function openNew(forUser){
-  const mgr = isMgr(), pool = mgr ? scope() : [me()];
-  const opts = pool.map(u=>`<option value="${u.id}" ${String(u.id)===String(forUser||(mgr?'':S.me))?'selected':''}>${esc(u.name)}${u.title?' — '+esc(u.title):''}</option>`).join('');
+  const mgr = isMgr(), ids = mgr ? (S.assignable||S.scope) : [S.me], pool = S.users.filter(u=>ids.includes(u.id));
+  // исполнители по группам: я · руководство · руководители отделов · мои подчинённые · остальные
+  const subs = S.subs||[], sel = String(forUser||(mgr?'':S.me));
+  const opt = u => `<option value="${u.id}" ${String(u.id)===sel?'selected':''}>${esc(u.name)}${u.title?' — '+esc(u.title):''}</option>`;
+  const lvl = u => u.id===S.me ? 0 : subs.includes(u.id) ? 3 : (u.level==='owner'||u.level==='founder'||u.level==='director') ? 1 : u.level==='manager' ? 2 : 4;
+  const GN = ['Я','Руководство','Руководители отделов','Мои подчинённые','Сотрудники'];
+  const opts = !mgr ? pool.map(opt).join('') : GN.map((g,i)=>{ const list = pool.filter(u=>lvl(u)===i); return list.length ? `<optgroup label="${g}">${list.map(opt).join('')}</optgroup>` : ''; }).join('')
+    + (subs.length>1 ? `<optgroup label="Разом"><option value="team">👥 Всем моим подчинённым (${subs.length})</option></optgroup>` : '');
   modal(`<form class="modal" id="new-task" role="dialog" aria-label="Новая задача">
     <h2>${mgr?'Поставить задачу':'Личная задача'}</h2>
     ${mgr && pool.length<=1 ? `<div class="demo-note card" style="margin-bottom:14px">В команде пока только вы, поэтому исполнителем можно выбрать только себя. ${isOwner()?'<button type="button" class="btn sm" data-act="demo-add-close">Добавить демо-сотрудников</button> ':''}<button type="button" class="btn sm" data-act="invite">Пригласить сотрудника</button></div>` : ''}
@@ -1176,8 +1182,9 @@ document.addEventListener('submit', async e => {
     if(f.id==='new-task'){
       const title = $('n-title').value.trim(), who = $('n-who').value;
       if(!title || !who) return toast('Заполните задачу и исполнителя');
-      const created = await api('POST','/api/tasks',{title, desc:$('n-desc').value, assignee:Number(who), priority:$('n-prio').value, due:$('n-due').value, dueTime:$('n-due-time').value||null, remind:$('n-rem').value||null, repeat:$('n-rep').value||null, wdays:[...document.querySelectorAll('input[name=n-wd]:checked')].map(i=>Number(i.value)), checklist:$('n-check').value, requiresPhoto:$('n-photo').checked});
+      const created = await api('POST','/api/tasks',{title, desc:$('n-desc').value, assignee: who==='team' ? 'team' : Number(who), priority:$('n-prio').value, due:$('n-due').value, dueTime:$('n-due-time').value||null, remind:$('n-rem').value||null, repeat:$('n-rep').value||null, wdays:[...document.querySelectorAll('input[name=n-wd]:checked')].map(i=>Number(i.value)), checklist:$('n-check').value, requiresPhoto:$('n-photo').checked});
       closeModal(); await reload(); render();
+      if(created.team) return toast(`Задача поставлена всем подчинённым (${created.count}) — каждый получит уведомление`);
       if(created.series && !created.id) return toast('Повтор настроен — первая задача появится в ближайший подходящий день в 06:00');
       return toast(created.series ? 'Повторяющаяся задача создана — задача на сегодня уже у исполнителя' : Number(who)!==S.me ? `Задача поставлена — ${U(Number(who)).name} получит уведомление` : 'Задача добавлена');
     }

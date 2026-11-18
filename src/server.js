@@ -240,6 +240,8 @@ app.get('/api/state', auth(), wrap(async (req, res) => {
     myRole: me.role,
     isAdmin: L.isAdmin(me),
     scope,
+    assignable: L.assignableOf(me, members),
+    subs: L.subordinatesOf(me, members),
     depts: depts.map(d => ({ id: d.id, name: d.name, color: d.color })),
     users: members.map(m => ({ id: m.id, name: m.name, first: m.first_name || '', last: m.last_name || '', nameOk: Boolean(m.name_ok || m.demo), demo: Boolean(m.demo), role: m.role === 'worker' ? 'worker' : 'manager', level: m.role, pos: m.role === 'owner' ? (m.pos === 'director' ? 'director' : 'founder') : null, owner: m.role === 'owner', admin: L.ADMIN.includes(m.role), dept: m.dept || 'Без отдела', deptId: m.dept_id, deptColor: m.dept_color || '#9AA3C7', plansOn: m.plans_on, walletOn: m.wallet_on, title: m.title || '', boss: m.boss_id, tg: Boolean(m.tg_id) && (m.settings || {}).tg !== false, username: m.username })),
     tasks: tasks.map(t => ({ id: t.id, title: t.title, desc: t.descr, assignee: t.assignee_id, author: t.author_id, priority: t.priority, status: t.status, created: t.created_on, due: t.due, dueTime: t.due_time, ext: t.extended, remind: t.remind_at, doneAt: t.done_on,
@@ -266,6 +268,14 @@ async function visibleTask(me, id) {
   return (await L.canSeeTask(me, t)) ? t : null;
 }
 app.post('/api/tasks', auth(), wrap(async (req, res) => {
+  // «всем моим подчинённым» — одна и та же задача каждому подчинённому отдельно
+  if (req.body.assignee === 'team') {
+    const subs = L.subordinatesOf(req.me, await L.companyMembers(req.me.company_id));
+    if (!subs.length) return res.status(400).json({ error: 'У вас пока нет подчинённых' });
+    const ids = [];
+    for (const id of subs) { const r = await L.createTask(req.me, { ...req.body, assignee: id }); if (r.error) return res.status(400).json({ error: r.error, created: ids.length }); if (r.task) ids.push(r.task.id); }
+    return res.json({ ids, count: subs.length, team: true });
+  }
   const r = await L.createTask(req.me, req.body);
   if (r.error) return res.status(r.error.startsWith('Этому') ? 403 : 400).json({ error: r.error });
   res.json({ id: r.task ? r.task.id : null, series: r.series ? r.series.id : null });

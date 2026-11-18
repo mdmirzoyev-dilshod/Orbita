@@ -190,6 +190,24 @@ async function tick() {
   }
 }
 /* ---------- задачи и комментарии (общие для сайта и бота) ---------- */
+// мои подчинённые: все, кто ниже по цепочке руководителей (+ работники моего отдела без руководителя)
+function subordinatesOf(member, members) {
+  const ids = new Set([member.id]); let grew = true;
+  while (grew) { grew = false; for (const m of members) if (!ids.has(m.id) && m.boss_id && ids.has(m.boss_id)) { ids.add(m.id); grew = true; } }
+  if (member.role === 'manager') for (const m of members) if (m.role === 'worker' && m.dept_id && m.dept_id === member.dept_id && !m.boss_id) ids.add(m.id);
+  ids.delete(member.id);
+  return [...ids];
+}
+// кому можно ставить задачи. Руководитель отдела: себе, своим подчинённым, директору и другим руководителям отделов
+// (если директора нет — владельцу). Руководство компании — всем. Работник — только себе.
+function assignableOf(member, members) {
+  const sc = scopeOf(member, members);
+  if (isAdmin(member) || member.role !== 'manager') return sc;
+  const dirs = members.filter(m => m.role === 'director' || (m.role === 'owner' && m.pos === 'director'));
+  const top = dirs.length ? dirs : members.filter(m => m.role === 'owner');
+  const peers = members.filter(m => m.role === 'manager');
+  return [...new Set([...sc, ...top.map(m => m.id), ...peers.map(m => m.id)])];
+}
 async function canSeeTask(me, t) {
   if (!me || !t || t.company_id !== me.company_id) return false;
   if (t.assignee_id === me.id || t.author_id === me.id || isAdmin(me)) return true;
@@ -201,7 +219,7 @@ async function createTask(me, b) {
   const title = String(b.title || '').trim().slice(0, 200);
   if (!title) return { error: 'Напишите, что нужно сделать' };
   const assignee = Number(b.assignee) || me.id;
-  if (!scopeOf(me, await companyMembers(me.company_id)).includes(assignee)) return { error: 'Этому сотруднику вы не можете ставить задачи' };
+  if (!assignableOf(me, await companyMembers(me.company_id)).includes(assignee)) return { error: 'Этому сотруднику вы не можете ставить задачи' };
   const isD = s => /^\d{4}-\d{2}-\d{2}$/.test(s || ''), isT = s => /^\d{2}:\d{2}$/.test(s || '');
   const due = isD(b.due) ? b.due : addDays(today(), 1);
   const dueTime = isT(b.dueTime) ? b.dueTime : null;
@@ -577,4 +595,4 @@ tg.handlers.extend = async (taskId, userId, code) => {
 
 function addMinutes(hhmm, n) { const [h, m] = hhmm.split(':').map(Number); const x = h * 60 + m + n; return `${String(Math.min(23, Math.floor(x / 60))).padStart(2, '0')}:${String(x >= 1440 ? 59 : x % 60).padStart(2, '0')}`; }
 
-module.exports = { autoAccept, attachFile, cancelReminders, syncTaskMessages, syncPlanMessages, setTaskRemind, snoozeAt, remindersTick, REPEAT_RU, seriesMatches, runSeries, seriesTick, toggleCheck, markDone, photoReport, askMore, parseChecklist, canSeeTask, createTask, addComment, primaryMemberId, EXT, extendTask, canExtend, ADMIN, isAdmin, STATUS, PRIO, companyMembers, scopeOf, notify, memberName, changeStatus, morningDigest, eveningDigest, tick };
+module.exports = { autoAccept, assignableOf, subordinatesOf, attachFile, cancelReminders, syncTaskMessages, syncPlanMessages, setTaskRemind, snoozeAt, remindersTick, REPEAT_RU, seriesMatches, runSeries, seriesTick, toggleCheck, markDone, photoReport, askMore, parseChecklist, canSeeTask, createTask, addComment, primaryMemberId, EXT, extendTask, canExtend, ADMIN, isAdmin, STATUS, PRIO, companyMembers, scopeOf, notify, memberName, changeStatus, morningDigest, eveningDigest, tick };
